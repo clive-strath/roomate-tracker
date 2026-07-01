@@ -64,7 +64,7 @@ roommate_comp/
 
 ### 1. Clone
 ```bash
-git clone https://github.com/clive-strath/roommate_comp.git
+git clone https://github.com/clive-strath/roommate_tracker.git
 cd roommate_comp
 ```
 
