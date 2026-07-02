@@ -6,10 +6,13 @@ import StudentRegister  from "./pages/auth/StudentRegister";
 import Login            from "./pages/auth/Login";
 import ForgotPassword   from "./pages/auth/ForgotPassword";
 import ResetPassword    from "./pages/auth/ResetPassword";
+import VerifyEmail      from "./pages/auth/VerifyEmail";
 import StudentDashboard from "./pages/dashboards/StudentDashboard";
 import AdminDashboard   from "./pages/dashboards/AdminDashboard";
 import RADashboard      from "./pages/dashboards/RADashboard";
 import PreferenceForm   from "./pages/preferences/PreferenceForm";
+import StudentSupervisorTools from "./pages/supervisor/StudentSupervisorTools";
+import AdminSupervisorTools from "./pages/supervisor/AdminSupervisorTools";
 
 export default function App() {
   return (
@@ -22,6 +25,7 @@ export default function App() {
           <Route path="/login"    element={<Login />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/verify-email" element={<VerifyEmail />} />
 
           {/* Student */}
           <Route path="/student/dashboard" element={
@@ -34,11 +38,21 @@ export default function App() {
               <PreferenceForm />
             </ProtectedRoute>
           } />
+          <Route path="/student/supervisor-tools" element={
+            <ProtectedRoute allowedRoles={["student"]}>
+              <StudentSupervisorTools />
+            </ProtectedRoute>
+          } />
 
           {/* Admin */}
           <Route path="/admin/dashboard" element={
             <ProtectedRoute allowedRoles={["admin"]}>
               <AdminDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/supervisor-tools" element={
+            <ProtectedRoute allowedRoles={["admin"]}>
+              <AdminSupervisorTools />
             </ProtectedRoute>
           } />
 

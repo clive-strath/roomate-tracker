@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, current_app, request, jsonify
 from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, jwt_required
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from email_validator import validate_email, EmailNotValidError
 from ..extensions import db, bcrypt, limiter
-from ..models import Student, AdminUser, PasswordResetToken, TokenBlocklist, AuditLog, now_utc
+from ..models import Student, AdminUser, PasswordResetToken, EmailVerificationToken, TokenBlocklist, AuditLog, now_utc
 from ..security import validate_password_policy
 
 auth_bp = Blueprint("auth", __name__)
@@ -32,8 +34,18 @@ def _hash_reset_token(raw_token):
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
+def _hash_verification_token(raw_token):
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
 def _build_reset_link(raw_token):
     base = current_app.config.get("FRONTEND_RESET_PASSWORD_URL", "http://localhost:5173/reset-password")
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}token={raw_token}"
+
+
+def _build_verification_link(raw_token):
+    base = current_app.config.get("FRONTEND_VERIFY_EMAIL_URL", "http://localhost:5173/verify-email")
     sep = "&" if "?" in base else "?"
     return f"{base}{sep}token={raw_token}"
 
@@ -65,6 +77,56 @@ def _send_reset_email(recipient_email, reset_link):
             server.starttls()
         server.login(smtp_user, smtp_password)
         server.send_message(msg)
+
+
+def _send_verification_email(recipient_email, verify_link):
+    smtp_user = current_app.config.get("SMTP_USERNAME")
+    smtp_password = current_app.config.get("SMTP_PASSWORD")
+    smtp_host = current_app.config.get("SMTP_HOST")
+    smtp_port = current_app.config.get("SMTP_PORT")
+    smtp_sender = current_app.config.get("SMTP_SENDER") or smtp_user
+    smtp_use_tls = current_app.config.get("SMTP_USE_TLS", True)
+
+    if not smtp_user or not smtp_password:
+        raise RuntimeError("SMTP credentials are not configured")
+
+    msg = EmailMessage()
+    msg["Subject"] = "Verify your Hostel Harmony email"
+    msg["From"] = smtp_sender
+    msg["To"] = recipient_email
+    msg.set_content(
+        "Welcome to Hostel Harmony. Please verify your email before signing in.\n\n"
+        f"Verify your email here:\n{verify_link}\n\n"
+        "This verification link expires shortly. If you did not create this account, you can ignore this email."
+    )
+
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+        if smtp_use_tls:
+            server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.send_message(msg)
+
+
+def _issue_email_verification(student, now=None):
+    now = now or now_utc()
+    expires = now + timedelta(minutes=current_app.config["EMAIL_VERIFY_TOKEN_EXPIRES_MINUTES"])
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _hash_verification_token(raw_token)
+    verify_link = _build_verification_link(raw_token)
+
+    EmailVerificationToken.query.filter_by(student_id=student.student_id, used_at=None).update({
+        "used_at": now
+    })
+
+    verify_row = EmailVerificationToken(
+        student_id=student.student_id,
+        token_hash=token_hash,
+        request_ip=request.remote_addr,
+        expires_at=expires,
+    )
+    db.session.add(verify_row)
+    db.session.commit()
+    return verify_row, verify_link
 
 
 # ── STUDENT REGISTRATION ──────────────────────────────────────────────────────
@@ -120,6 +182,7 @@ def register_student():
         phone          = data.get("phone", "").strip() or None,
         gender         = data["gender"].lower(),
         status         = "active",
+        email_verified = False,
     )
 
     db.session.add(student)
@@ -134,8 +197,39 @@ def register_student():
     )
     db.session.commit()
 
+    try:
+        verify_row, verify_link = _issue_email_verification(student)
+        _send_verification_email(student.email, verify_link)
+        _record_audit(
+            actor_type="student",
+            actor_id=student.student_id,
+            action="auth.email_verification_sent",
+            target_table="email_verification_tokens",
+            target_id=verify_row.verify_id,
+            detail="Verification email requested",
+        )
+        db.session.commit()
+    except Exception as exc:
+        _record_audit(
+            actor_type="student",
+            actor_id=student.student_id,
+            action="auth.email_verification_send_failed",
+            target_table="students",
+            target_id=student.student_id,
+            detail=str(exc),
+        )
+        db.session.commit()
+        current_app.logger.exception("Failed to send verification email: %s", exc)
+        if current_app.debug:
+            return jsonify({
+                "message": "Registration successful. Please verify your email before logging in.",
+                "student_id": student.student_id,
+                "verify_link": verify_link if "verify_link" in locals() else None,
+                "note": "SMTP failed in debug mode, using direct link fallback.",
+            }), 201
+
     return jsonify({
-        "message":    "Registration successful. Please log in.",
+        "message": "Registration successful. Please verify your email before logging in.",
         "student_id": student.student_id,
     }), 201
 
@@ -181,6 +275,12 @@ def login():
         db.session.commit()
         return jsonify({"error": "Invalid email or password"}), 401
 
+    if role == "student" and not user.email_verified:
+        return jsonify({
+            "error": "Please verify your email before logging in.",
+            "code": "email_not_verified",
+        }), 403
+
     # Build JWT with role embedded
     token = create_access_token(
         identity=str(user_id),
@@ -206,6 +306,75 @@ def login():
         "role":     role,
         "name":     user.name,
         "user":     user_data,
+    }), 200
+
+
+@auth_bp.route("/google-login", methods=["POST"])
+@limiter.limit("10 per minute")
+def google_login():
+    data = request.get_json(silent=True) or {}
+    credential = data.get("credential")
+    client_id = current_app.config.get("GOOGLE_CLIENT_ID")
+
+    if not credential:
+        return jsonify({"error": "Google credential is required"}), 400
+    if not client_id:
+        return jsonify({"error": "Google sign-in is not configured"}), 500
+
+    try:
+        token_info = google_id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            client_id,
+        )
+    except Exception:
+        return jsonify({"error": "Invalid Google credential"}), 401
+
+    email = (token_info.get("email") or "").strip().lower()
+    email_verified = bool(token_info.get("email_verified"))
+
+    if not email or not email_verified:
+        return jsonify({"error": "Google account email is not verified"}), 401
+
+    student = Student.query.filter_by(email=email, status="active").first()
+    if not student:
+        return jsonify({"error": "No student account exists for this Google email. Please register first."}), 404
+
+    if not student.email_verified:
+        student.email_verified = True
+        _record_audit(
+            actor_type="student",
+            actor_id=student.student_id,
+            action="auth.email_verified_via_google",
+            target_table="students",
+            target_id=student.student_id,
+            detail="Email marked verified through Google Sign-In",
+        )
+
+    token = create_access_token(
+        identity=str(student.student_id),
+        additional_claims={
+            "role": "student",
+            "name": student.name,
+            "hostel_block": None,
+        }
+    )
+
+    _record_audit(
+        actor_type="student",
+        actor_id=student.student_id,
+        action="auth.google_login_success",
+        target_table="students",
+        target_id=student.student_id,
+        detail="Google Sign-In",
+    )
+    db.session.commit()
+
+    return jsonify({
+        "token": token,
+        "role": "student",
+        "name": student.name,
+        "user": student.to_dict(),
     }), 200
 
 
@@ -310,6 +479,91 @@ def forgot_password():
     db.session.commit()
 
     return jsonify({"message": generic_message}), 200
+
+
+@auth_bp.route("/resend-verification", methods=["POST"])
+@limiter.limit("5 per minute")
+def resend_verification():
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+
+    if not email:
+        return jsonify({"error": "Email is required"}), 400
+
+    generic_message = "If the account exists and is unverified, a new verification email has been sent."
+    student = Student.query.filter_by(email=email, status="active").first()
+
+    if not student:
+        return jsonify({"message": generic_message}), 200
+    if student.email_verified:
+        return jsonify({"message": "This email is already verified. You can log in."}), 200
+
+    try:
+        verify_row, verify_link = _issue_email_verification(student)
+        _send_verification_email(student.email, verify_link)
+        _record_audit(
+            actor_type="student",
+            actor_id=student.student_id,
+            action="auth.email_verification_resent",
+            target_table="email_verification_tokens",
+            target_id=verify_row.verify_id,
+            detail="Verification email re-requested",
+        )
+        db.session.commit()
+    except Exception as exc:
+        _record_audit(
+            actor_type="student",
+            actor_id=student.student_id,
+            action="auth.email_verification_resend_failed",
+            target_table="students",
+            target_id=student.student_id,
+            detail=str(exc),
+        )
+        db.session.commit()
+        current_app.logger.exception("Failed to resend verification email: %s", exc)
+        if current_app.debug:
+            return jsonify({
+                "message": generic_message,
+                "verify_link": verify_link if "verify_link" in locals() else None,
+                "note": "SMTP failed in debug mode, using direct link fallback.",
+            }), 200
+
+    return jsonify({"message": generic_message}), 200
+
+
+@auth_bp.route("/verify-email", methods=["POST"])
+@limiter.limit("10 per minute")
+def verify_email():
+    data = request.get_json(silent=True) or {}
+    raw_token = (data.get("token") or "").strip()
+
+    if not raw_token:
+        return jsonify({"error": "Verification token is required"}), 400
+
+    token_hash = _hash_verification_token(raw_token)
+    now = now_utc()
+
+    token_row = EmailVerificationToken.query.filter_by(token_hash=token_hash).first()
+    if not token_row or token_row.used_at is not None or token_row.expires_at <= now:
+        return jsonify({"error": "Verification token is invalid or expired"}), 400
+
+    student = Student.query.get(token_row.student_id)
+    if not student or student.status != "active":
+        return jsonify({"error": "Verification token is invalid or expired"}), 400
+
+    student.email_verified = True
+    EmailVerificationToken.query.filter_by(student_id=student.student_id, used_at=None).update({"used_at": now})
+    _record_audit(
+        actor_type="student",
+        actor_id=student.student_id,
+        action="auth.email_verified",
+        target_table="students",
+        target_id=student.student_id,
+        detail="Email verified successfully",
+    )
+    db.session.commit()
+
+    return jsonify({"message": "Email verified successfully. You can now log in."}), 200
 
 
 @auth_bp.route("/reset-password", methods=["POST"])
