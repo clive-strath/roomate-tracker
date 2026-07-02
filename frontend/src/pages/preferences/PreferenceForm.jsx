@@ -9,6 +9,37 @@ const SLEEP_LABELS = { 1:"Very Early (9PM)", 2:"Early (10PM)",   3:"Normal (11PM
 const NOISE_LABELS = { 1:"Silence needed",   2:"Mostly quiet",   3:"Some noise ok",   4:"Fairly loud", 5:"Loud is fine"     };
 const CLEAN_LABELS = { 1:"Very messy",       2:"Somewhat messy", 3:"Average",         4:"Fairly tidy", 5:"Obsessively tidy" };
 const GUEST_LABELS = { 1:"No guests ever",   2:"Rarely",         3:"Sometimes",       4:"Often",       5:"Guests daily"     };
+const SOCIAL_LABELS = { 1:"Strong Introvert", 2:"Mostly Introvert", 3:"Balanced", 4:"Mostly Extrovert", 5:"Strong Extrovert" };
+const VAPING_LABELS = { 1:"No vaping", 2:"Occasional vaping", 3:"Frequent vaping" };
+
+const FIELD_OPTIONS = [
+  { value: "stem", label: "STEM" },
+  { value: "medicine", label: "Medicine" },
+  { value: "business", label: "Business" },
+  { value: "social_sciences", label: "Social Sciences" },
+  { value: "law", label: "Law" },
+  { value: "arts_humanities", label: "Arts and Humanities" },
+  { value: "education", label: "Education" },
+  { value: "other", label: "Other" },
+];
+
+const HOBBY_OPTIONS = [
+  { value: "reading", label: "Reading" },
+  { value: "gaming", label: "Gaming" },
+  { value: "sports", label: "Sports" },
+  { value: "music", label: "Music" },
+  { value: "cooking", label: "Cooking" },
+  { value: "art_drawing", label: "Art and Drawing" },
+  { value: "photography", label: "Photography" },
+  { value: "travel", label: "Travel" },
+  { value: "fitness_gym", label: "Fitness and Gym" },
+  { value: "movies_series", label: "Movies and Series" },
+  { value: "dancing", label: "Dancing" },
+  { value: "volunteering", label: "Volunteering" },
+  { value: "coding", label: "Coding" },
+  { value: "fashion", label: "Fashion" },
+  { value: "nature_hiking", label: "Nature and Hiking" },
+];
 
 export default function PreferenceForm() {
   const { user } = useAuth();
@@ -22,6 +53,10 @@ export default function PreferenceForm() {
     guest_policy:      3,
     bathroom_schedule: 3,
     study_habits:      "flexible",
+    introvert_extrovert: 3,
+    vaping_habit: 1,
+    field_of_study: "other",
+    hobbies: [],
     additional_notes:  "",
   });
 
@@ -30,6 +65,7 @@ export default function PreferenceForm() {
   const [loading,  setLoading]  = useState(true);
   const [saving,   setSaving]   = useState(false);
   const [message,  setMessage]  = useState({ type:"", text:"" });
+  const [hobbySearch, setHobbySearch] = useState("");
 
   // Check if preferences already exist
   useEffect(() => {
@@ -37,7 +73,15 @@ export default function PreferenceForm() {
       try {
         const res = await api.get(`/preferences/${user.student_id}`);
         if (res.data.submitted && res.data.preferences) {
-          setForm(res.data.preferences);
+          const incoming = res.data.preferences;
+          setForm({
+            ...incoming,
+            introvert_extrovert: incoming.introvert_extrovert ?? 3,
+            vaping_habit: incoming.vaping_habit ?? 1,
+            field_of_study: incoming.field_of_study ?? "other",
+            hobbies: Array.isArray(incoming.hobbies) ? incoming.hobbies : [],
+            additional_notes: incoming.additional_notes || "",
+          });
           setIsEdit(true);
           setIsLocked(res.data.preferences.is_locked);
         }
@@ -58,6 +102,19 @@ export default function PreferenceForm() {
     // For bathroom_schedule, it's stored as int in backend, convert if needed
     const val = e.target.name === "bathroom_schedule" ? parseInt(e.target.value) : e.target.value;
     setForm({ ...form, [e.target.name]: val });
+  };
+
+  const handleSelect = (e) => {
+    const numericFields = new Set(["vaping_habit"]);
+    const nextValue = numericFields.has(e.target.name) ? parseInt(e.target.value) : e.target.value;
+    setForm({ ...form, [e.target.name]: nextValue });
+  };
+
+  const handleHobbyToggle = (hobby) => {
+    const current = Array.isArray(form.hobbies) ? form.hobbies : [];
+    const exists = current.includes(hobby);
+    const next = exists ? current.filter((h) => h !== hobby) : [...current, hobby];
+    setForm({ ...form, hobbies: next });
   };
 
   const handleSubmit = async (e) => {
@@ -113,6 +170,30 @@ export default function PreferenceForm() {
     return { text: "Flexible Schedule", icon: "🚿" };
   };
 
+  const getSocialTag = () => {
+    if (form.introvert_extrovert <= 2) return { text: "Introvert Leaning", icon: "🧠" };
+    if (form.introvert_extrovert >= 4) return { text: "Extrovert Leaning", icon: "🗣️" };
+    return { text: "Socially Balanced", icon: "⚖️" };
+  };
+
+  const getLifestyleTag = () => {
+    if (form.vaping_habit === 1) return { text: "No Vaping", icon: "🌿" };
+    if (form.vaping_habit === 2) return { text: "Occasional Vaping", icon: "💨" };
+    return { text: "Frequent Vaping", icon: "💨" };
+  };
+
+  const getHobbyTag = () => {
+    const count = Array.isArray(form.hobbies) ? form.hobbies.length : 0;
+    if (count === 0) return { text: "No hobbies selected yet", icon: "🎯" };
+    return { text: `${count} hobbies selected`, icon: "🎯" };
+  };
+
+  const filteredHobbyOptions = HOBBY_OPTIONS.filter((hobby) => {
+    const term = hobbySearch.trim().toLowerCase();
+    if (!term) return true;
+    return hobby.label.toLowerCase().includes(term);
+  });
+
   if (loading) {
     return (
       <div className="page-container">
@@ -129,6 +210,9 @@ export default function PreferenceForm() {
   const cleanTag = getCleanTag();
   const guestTag = getGuestTag();
   const bathroomTag = getBathroomTag();
+  const socialTag = getSocialTag();
+  const lifestyleTag = getLifestyleTag();
+  const hobbyTag = getHobbyTag();
 
   return (
     <div className="page-container">
@@ -371,6 +455,95 @@ export default function PreferenceForm() {
                 </div>
               </fieldset>
 
+              <fieldset className="profile-section-fieldset">
+                <legend className="profile-section-legend">🧠 Social and Lifestyle</legend>
+
+                <div className="slider-group">
+                  <div className="slider-label-row">
+                    <label className="slider-question">🧠 How socially outgoing are you in shared spaces?</label>
+                    <span className="slider-value-indicator">{form.introvert_extrovert}/5</span>
+                  </div>
+                  <div className="slider-input-container">
+                    <input
+                      type="range"
+                      name="introvert_extrovert"
+                      min="1"
+                      max="5"
+                      value={form.introvert_extrovert}
+                      onChange={handleSlider}
+                      disabled={isLocked}
+                      className="slider-input"
+                    />
+                  </div>
+                  <p className="slider-desc">{SOCIAL_LABELS[form.introvert_extrovert]}</p>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">💨 Vaping Habit</label>
+                  <select
+                    name="vaping_habit"
+                    value={form.vaping_habit}
+                    onChange={handleSelect}
+                    disabled={isLocked}
+                    className="form-select"
+                  >
+                    <option value={1}>{VAPING_LABELS[1]}</option>
+                    <option value={2}>{VAPING_LABELS[2]}</option>
+                    <option value={3}>{VAPING_LABELS[3]}</option>
+                  </select>
+                </div>
+              </fieldset>
+
+              <fieldset className="profile-section-fieldset">
+                <legend className="profile-section-legend">🎓 Academic and Interests</legend>
+
+                <div className="form-group">
+                  <label className="form-label">🎓 Field of Study</label>
+                  <select
+                    name="field_of_study"
+                    value={form.field_of_study}
+                    onChange={handleSelect}
+                    disabled={isLocked}
+                    className="form-select"
+                  >
+                    {FIELD_OPTIONS.map((field) => (
+                      <option key={field.value} value={field.value}>{field.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">🎯 Select your hobbies (multiple allowed)</label>
+                  <input
+                    type="text"
+                    value={hobbySearch}
+                    onChange={(e) => setHobbySearch(e.target.value)}
+                    placeholder="Search hobbies..."
+                    disabled={isLocked}
+                    className="form-input"
+                    style={{ marginBottom: "10px" }}
+                  />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                    {filteredHobbyOptions.map((hobby) => (
+                      <label key={hobby.value} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px" }}>
+                        <input
+                          type="checkbox"
+                          checked={Array.isArray(form.hobbies) && form.hobbies.includes(hobby.value)}
+                          onChange={() => handleHobbyToggle(hobby.value)}
+                          disabled={isLocked}
+                        />
+                        <span>{hobby.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {filteredHobbyOptions.length === 0 && (
+                    <p style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "8px" }}>
+                      No hobbies match your search.
+                    </p>
+                  )}
+                </div>
+              </fieldset>
+
               {/* Additional Notes */}
               <div className="card">
                 <h3 className="card-title">📝 Additional Profile Notes</h3>
@@ -432,6 +605,18 @@ export default function PreferenceForm() {
                 <div className="snapshot-tag">
                   <span>{bathroomTag.icon}</span>
                   <span>{bathroomTag.text}</span>
+                </div>
+                <div className="snapshot-tag">
+                  <span>{socialTag.icon}</span>
+                  <span>{socialTag.text}</span>
+                </div>
+                <div className="snapshot-tag">
+                  <span>{lifestyleTag.icon}</span>
+                  <span>{lifestyleTag.text}</span>
+                </div>
+                <div className="snapshot-tag">
+                  <span>{hobbyTag.icon}</span>
+                  <span>{hobbyTag.text}</span>
                 </div>
               </div>
             </div>

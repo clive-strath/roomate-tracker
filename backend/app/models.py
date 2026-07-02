@@ -16,6 +16,15 @@ class Student(db.Model):
     phone          = db.Column(db.String(20))
     gender         = db.Column(db.String(20))
     status         = db.Column(db.String(10), default="active")
+    email_verified = db.Column(db.Boolean, nullable=False, default=True)
+    verification_status = db.Column(db.String(10), nullable=False, default="pending")
+    verification_document_path = db.Column(db.Text)
+    verification_note = db.Column(db.Text)
+    verified_by = db.Column(db.Integer, db.ForeignKey("admin_users.admin_id"), nullable=True)
+    verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    profile_photo_path = db.Column(db.Text)
+    expected_start_date = db.Column(db.Date)
+    expected_end_date = db.Column(db.Date)
     created_at     = db.Column(db.DateTime(timezone=True), default=now_utc)
     updated_at     = db.Column(db.DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -33,6 +42,11 @@ class Student(db.Model):
             "phone":          self.phone,
             "gender":         self.gender,
             "status":         self.status,
+            "email_verified": self.email_verified,
+            "verification_status": self.verification_status,
+            "profile_photo_path": self.profile_photo_path,
+            "expected_start_date": self.expected_start_date.isoformat() if self.expected_start_date else None,
+            "expected_end_date": self.expected_end_date.isoformat() if self.expected_end_date else None,
             "has_preferences": self.preferences is not None,
             "created_at":     self.created_at.isoformat() if self.created_at else None,
         }
@@ -76,6 +90,10 @@ class StudentPreference(db.Model):
     guest_policy      = db.Column(db.Integer, nullable=False)
     bathroom_schedule = db.Column(db.Integer, nullable=False)
     study_habits      = db.Column(db.String(20), nullable=False)
+    introvert_extrovert = db.Column(db.Integer, nullable=True)
+    vaping_habit = db.Column(db.Integer, nullable=True)
+    field_of_study = db.Column(db.String(30), nullable=True)
+    hobbies = db.Column(db.ARRAY(db.Text).with_variant(db.JSON, "sqlite"), nullable=True)
     additional_notes  = db.Column(db.Text)
     is_locked         = db.Column(db.Boolean, default=False)
     created_at        = db.Column(db.DateTime(timezone=True), default=now_utc)
@@ -92,6 +110,10 @@ class StudentPreference(db.Model):
             "guest_policy":      self.guest_policy,
             "bathroom_schedule": self.bathroom_schedule,
             "study_habits":      self.study_habits,
+            "introvert_extrovert": self.introvert_extrovert,
+            "vaping_habit": self.vaping_habit,
+            "field_of_study": self.field_of_study,
+            "hobbies": self.hobbies,
             "additional_notes":  self.additional_notes,
             "is_locked":         self.is_locked,
         }
@@ -239,6 +261,80 @@ class PasswordResetToken(db.Model):
     used_at       = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at    = db.Column(db.DateTime(timezone=True), default=now_utc)
     updated_at    = db.Column(db.DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class EmailVerificationToken(db.Model):
+    __tablename__ = "email_verification_tokens"
+
+    verify_id      = db.Column(db.Integer, primary_key=True)
+    student_id     = db.Column(db.Integer, db.ForeignKey("students.student_id"), nullable=False)
+    token_hash     = db.Column(db.String(64), nullable=False, unique=True)
+    request_ip     = db.Column(db.String(45), nullable=True)
+    expires_at     = db.Column(db.DateTime(timezone=True), nullable=False)
+    used_at        = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at     = db.Column(db.DateTime(timezone=True), default=now_utc)
+    updated_at     = db.Column(db.DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class StayDateChangeRequest(db.Model):
+    __tablename__ = "stay_date_change_requests"
+
+    request_id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey("students.student_id"), nullable=False)
+    requested_start = db.Column(db.Date, nullable=False)
+    requested_end = db.Column(db.Date, nullable=False)
+    reason = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(10), nullable=False, default="pending")
+    admin_note = db.Column(db.Text, nullable=True)
+    reviewed_by = db.Column(db.Integer, db.ForeignKey("admin_users.admin_id"), nullable=True)
+    reviewed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=now_utc)
+    updated_at = db.Column(db.DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class StudentAllergy(db.Model):
+    __tablename__ = "student_allergies"
+
+    allergy_id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey("students.student_id"), unique=True, nullable=False)
+    has_dust_mould_allergy = db.Column(db.Boolean, nullable=False, default=False)
+    has_fragrance_sensitivity = db.Column(db.Boolean, nullable=False, default=False)
+    has_food_allergy = db.Column(db.Boolean, nullable=False, default=False)
+    food_allergy_detail = db.Column(db.Text, nullable=True)
+    has_latex_allergy = db.Column(db.Boolean, nullable=False, default=False)
+    has_chemical_sensitivity = db.Column(db.Boolean, nullable=False, default=False)
+    chemical_sensitivity_detail = db.Column(db.Text, nullable=True)
+    has_severe_nut_allergy = db.Column(db.Boolean, nullable=False, default=False)
+    has_smoke_sensitivity = db.Column(db.Boolean, nullable=False, default=False)
+    has_asthma_or_respiratory_condition = db.Column(db.Boolean, nullable=False, default=False)
+    heavy_fragrance_user = db.Column(db.Boolean, nullable=False, default=False)
+    cooks_strong_smelling_food = db.Column(db.Boolean, nullable=False, default=False)
+    uses_strong_cleaning_products = db.Column(db.Boolean, nullable=False, default=False)
+    stores_or_eats_nuts_in_room = db.Column(db.Boolean, nullable=False, default=False)
+    smoking_habit = db.Column(db.String(11), nullable=False, default="no")
+    created_at = db.Column(db.DateTime(timezone=True), default=now_utc)
+    updated_at = db.Column(db.DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class PreferredRoommate(db.Model):
+    __tablename__ = "preferred_roommates"
+
+    preference_card_id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey("students.student_id"), nullable=False)
+    preferred_student_id = db.Column(db.Integer, db.ForeignKey("students.student_id"), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=now_utc)
+
+
+class CompatibilityScore(db.Model):
+    __tablename__ = "compatibility_scores"
+
+    score_id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey("students.student_id"), nullable=False)
+    candidate_id = db.Column(db.Integer, db.ForeignKey("students.student_id"), nullable=False)
+    score = db.Column(db.Numeric(5, 2), nullable=False)
+    is_hard_blocked = db.Column(db.Boolean, nullable=False, default=False)
+    block_reason = db.Column(db.String(30), nullable=True)
+    computed_at = db.Column(db.DateTime(timezone=True), default=now_utc)
 
 
 class TokenBlocklist(db.Model):

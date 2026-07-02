@@ -2,10 +2,21 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from ..extensions import db
 from ..models import StudentPreference, Student
+from ..services.compatibility_scores_service import refresh_compatibility_scores_for_student
 
 preferences_bp = Blueprint("preferences", __name__)
 
 VALID_STUDY_HABITS = ("quiet", "group", "flexible")
+VALID_FIELDS_OF_STUDY = (
+    "stem", "medicine", "business", "arts_humanities",
+    "law", "social_sciences", "education", "other",
+)
+VALID_HOBBIES = {
+    "reading", "gaming", "sports", "music", "cooking",
+    "art_drawing", "photography", "travel", "fitness_gym",
+    "movies_series", "dancing", "volunteering", "coding",
+    "fashion", "nature_hiking",
+}
 
 
 def validate_preference_data(data):
@@ -30,6 +41,33 @@ def validate_preference_data(data):
 
     if data.get("study_habits") not in VALID_STUDY_HABITS:
         errors.append("study_habits must be quiet, group, or flexible")
+
+    optional_int_fields = {
+        "introvert_extrovert": (1, 5),
+        "vaping_habit": (1, 3),
+    }
+    for field, (mn, mx) in optional_int_fields.items():
+        if data.get(field) in (None, ""):
+            continue
+        try:
+            val = int(data.get(field))
+            if val < mn or val > mx:
+                errors.append(f"{field} must be between {mn} and {mx}")
+        except (TypeError, ValueError):
+            errors.append(f"{field} must be a number")
+
+    field_of_study = data.get("field_of_study")
+    if field_of_study and field_of_study not in VALID_FIELDS_OF_STUDY:
+        errors.append("field_of_study is invalid")
+
+    hobbies = data.get("hobbies")
+    if hobbies not in (None, ""):
+        if not isinstance(hobbies, list):
+            errors.append("hobbies must be an array of hobby tags")
+        else:
+            invalid_hobbies = [h for h in hobbies if h not in VALID_HOBBIES]
+            if invalid_hobbies:
+                errors.append("hobbies contains invalid values")
 
     return errors
 
@@ -69,11 +107,16 @@ def submit_preferences():
         guest_policy      = int(data["guest_policy"]),
         bathroom_schedule = int(data["bathroom_schedule"]),
         study_habits      = data["study_habits"],
+        introvert_extrovert = int(data["introvert_extrovert"]) if data.get("introvert_extrovert") not in (None, "") else None,
+        vaping_habit      = int(data["vaping_habit"]) if data.get("vaping_habit") not in (None, "") else None,
+        field_of_study    = data.get("field_of_study") or None,
+        hobbies           = data.get("hobbies") or None,
         additional_notes  = data.get("additional_notes", ""),
     )
 
     db.session.add(pref)
     db.session.commit()
+    refresh_compatibility_scores_for_student(student_id)
 
     return jsonify({
         "message":    "Preferences submitted successfully",
@@ -137,9 +180,14 @@ def update_preferences(student_id=None):
     pref.guest_policy      = int(data["guest_policy"])
     pref.bathroom_schedule = int(data["bathroom_schedule"])
     pref.study_habits      = data["study_habits"]
+    pref.introvert_extrovert = int(data["introvert_extrovert"]) if data.get("introvert_extrovert") not in (None, "") else None
+    pref.vaping_habit      = int(data["vaping_habit"]) if data.get("vaping_habit") not in (None, "") else None
+    pref.field_of_study    = data.get("field_of_study") or None
+    pref.hobbies           = data.get("hobbies") or None
     pref.additional_notes  = data.get("additional_notes", "")
 
     db.session.commit()
+    refresh_compatibility_scores_for_student(sid)
 
     return jsonify({
         "message":    "Preferences updated successfully",

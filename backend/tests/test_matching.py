@@ -1,6 +1,21 @@
 import networkx as nx
 from app.services.compatibility_engine import run_maximum_weight_matching, build_compatibility_graph
 
+
+def _pref():
+    return {
+        "wake_time": 3,
+        "sleep_time": 3,
+        "noise_tolerance": 3,
+        "cleanliness_level": 3,
+        "guest_policy": 3,
+        "bathroom_schedule": 1,
+        "introvert_extrovert": 3,
+        "vaping_habit": 1,
+        "hobbies": ["reading"],
+        "field_of_study": "stem",
+    }
+
 def test_four_students_max_weight():
     # A-B=100, A-C=95, A-D=95, B-C=94, B-D=94, C-D=5
     G = nx.Graph()
@@ -56,22 +71,18 @@ def test_different_genders_no_edges():
         {
             "student_id": 1,
             "gender": "male",
-            "preferences": {
-                "wake_time": 3, "sleep_time": 3, "noise_tolerance": 3,
-                "cleanliness_level": 3, "guest_policy": 3, "bathroom_schedule": 1
-            }
+            "preferences": _pref(),
+            "allergies": None,
         },
         {
             "student_id": 2,
             "gender": "female",
-            "preferences": {
-                "wake_time": 3, "sleep_time": 3, "noise_tolerance": 3,
-                "cleanliness_level": 3, "guest_policy": 3, "bathroom_schedule": 1
-            }
+            "preferences": _pref(),
+            "allergies": None,
         }
     ]
 
-    G = build_compatibility_graph(students)
+    G, _, _ = build_compatibility_graph(students)
     assert G.number_of_nodes() == 2
     assert G.number_of_edges() == 0  # no cross-gender edges
 
