@@ -1,19 +1,330 @@
 import csv
 import io
+import mimetypes
+import os
 
-from flask import Blueprint, request, jsonify, Response
+from flask import Blueprint, request, jsonify, Response, current_app, send_file
 from flask_jwt_extended import get_jwt_identity
 from sqlalchemy import asc, desc
 from sqlalchemy.orm import aliased
 
 from ..extensions import db, bcrypt
-from ..models import AdminUser, Student, StudentPreference, Room, RoomAssignment, ConflictLog
+from ..models import (
+    AdminUser,
+    CompatibilityScore,
+    Student,
+    StudentPreference,
+    StayDateChangeRequest,
+    Room,
+    RoomAssignment,
+    ConflictLog,
+)
 from . import role_required
 from ..services.allocation_service import generate_allocation_preview, confirm_allocation
 from ..services.compatibility_engine import calculate_compatibility, is_flagged
+from ..services.compatibility_scores_service import refresh_compatibility_scores_for_student
 from ..security import validate_password_policy
 
 admin_bp = Blueprint("admin", __name__)
+
+
+def _resolve_backend_upload_abs_path(stored_path):
+    if not stored_path:
+        return None
+
+    backend_root = os.path.abspath(os.path.join(current_app.root_path, ".."))
+    absolute_path = os.path.abspath(os.path.join(backend_root, stored_path))
+    if not absolute_path.startswith(backend_root + os.sep):
+        return None
+    if not os.path.isfile(absolute_path):
+        return None
+    return absolute_path
+
+
+def _build_doc_meta(path_value):
+    absolute_path = _resolve_backend_upload_abs_path(path_value)
+    if not absolute_path:
+        return {
+            "available": False,
+            "filename": None,
+            "mime_type": None,
+            "size_bytes": None,
+        }
+
+    guessed_type = mimetypes.guess_type(absolute_path)[0] or "application/octet-stream"
+    return {
+        "available": True,
+        "filename": os.path.basename(absolute_path),
+        "mime_type": guessed_type,
+        "size_bytes": os.path.getsize(absolute_path),
+    }
+
+
+@admin_bp.route("/students/<int:student_id>/compatibility/refresh", methods=["POST"])
+@role_required("admin")
+def refresh_student_compatibility(student_id):
+    Student.query.get_or_404(student_id)
+    touched = refresh_compatibility_scores_for_student(student_id)
+    return jsonify({"message": "Compatibility scores refreshed", "rows_touched": touched}), 200
+
+
+@admin_bp.route("/students/<int:student_id>/compatibility/scores", methods=["GET"])
+@role_required("admin")
+def student_compatibility_scores(student_id):
+    Student.query.get_or_404(student_id)
+    try:
+        limit = int(request.args.get("limit", 25))
+    except ValueError:
+        return jsonify({"error": "limit must be an integer"}), 400
+    limit = max(1, min(limit, 200))
+
+    include_blocked = (request.args.get("include_blocked") or "true").lower() == "true"
+    q = CompatibilityScore.query.filter_by(student_id=student_id)
+    if not include_blocked:
+        q = q.filter(CompatibilityScore.is_hard_blocked.is_(False))
+
+    rows = q.order_by(CompatibilityScore.score.desc(), CompatibilityScore.computed_at.desc()).limit(limit).all()
+    return jsonify({
+        "scores": [
+            {
+                "candidate_id": r.candidate_id,
+                "score": float(r.score),
+                "is_hard_blocked": r.is_hard_blocked,
+                "block_reason": r.block_reason,
+                "computed_at": r.computed_at.isoformat() if r.computed_at else None,
+            }
+            for r in rows
+        ]
+    }), 200
+
+
+@admin_bp.route("/students/<int:student_id>/compatibility/block-summary", methods=["GET"])
+@role_required("admin")
+def student_compatibility_block_summary(student_id):
+    Student.query.get_or_404(student_id)
+    rows = CompatibilityScore.query.filter_by(student_id=student_id).all()
+
+    by_reason = {}
+    blocked = 0
+    for row in rows:
+        if not row.is_hard_blocked:
+            continue
+        blocked += 1
+        reason = row.block_reason or "unknown"
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+
+    total = len(rows)
+    return jsonify({
+        "student_id": student_id,
+        "total_candidates": total,
+        "blocked_candidates": blocked,
+        "eligible_candidates": max(0, total - blocked),
+        "by_reason": by_reason,
+    }), 200
+
+
+@admin_bp.route("/students/<int:student_id>/compatibility/summary", methods=["GET"])
+@role_required("admin")
+def student_compatibility_summary(student_id):
+    student = Student.query.get_or_404(student_id)
+    rows = CompatibilityScore.query.filter_by(student_id=student_id).all()
+
+    total = len(rows)
+    blocked = sum(1 for r in rows if r.is_hard_blocked)
+    by_reason = {}
+    for row in rows:
+        if not row.is_hard_blocked:
+            continue
+        reason = row.block_reason or "unknown"
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+
+    top_score = None
+    for row in rows:
+        if row.is_hard_blocked:
+            continue
+        score = float(row.score) if row.score is not None else 0.0
+        if top_score is None or score > top_score:
+            top_score = score
+
+    return jsonify({
+        "student_id": student_id,
+        "student_name": student.name,
+        "student_email": student.email,
+        "email_verified": bool(student.email_verified),
+        "verification_status": student.verification_status,
+        "is_matching_eligible": (
+            student.status == "active"
+            and bool(student.email_verified)
+            and student.verification_status == "approved"
+            and student.preferences is not None
+        ),
+        "eligibility": {
+            "status_active": student.status == "active",
+            "email_verified": bool(student.email_verified),
+            "verification_approved": student.verification_status == "approved",
+            "has_preferences": student.preferences is not None,
+        },
+        "total_candidates": total,
+        "blocked_candidates": blocked,
+        "eligible_candidates": max(0, total - blocked),
+        "top_non_blocked_score": top_score,
+        "by_reason": by_reason,
+    }), 200
+
+
+@admin_bp.route("/students/verification/pending", methods=["GET"])
+@role_required("admin")
+def pending_student_verifications():
+    page, per_page, pagination_error = _parse_pagination_params(default_per_page=20, max_per_page=100)
+    if pagination_error:
+        return pagination_error
+
+    q = Student.query.filter(Student.verification_status == "pending").order_by(desc(Student.created_at))
+    pagination = q.paginate(page=page, per_page=per_page, error_out=False)
+
+    students = []
+    for s in pagination.items:
+        row = s.to_dict()
+        row["verification_document_path"] = s.verification_document_path
+        row["has_profile_photo"] = bool(s.profile_photo_path)
+        row["has_verification_document"] = bool(s.verification_document_path)
+        students.append(row)
+
+    return jsonify({
+        "students": students,
+        "total": pagination.total,
+        "page": pagination.page,
+        "per_page": pagination.per_page,
+        "total_pages": pagination.pages,
+    }), 200
+
+
+@admin_bp.route("/students/<int:student_id>/verification-documents", methods=["GET"])
+@role_required("admin")
+def student_verification_documents(student_id):
+    student = Student.query.get_or_404(student_id)
+    return jsonify({
+        "student_id": student.student_id,
+        "name": student.name,
+        "student_number": student.student_number,
+        "email": student.email,
+        "email_verified": bool(student.email_verified),
+        "verification_status": student.verification_status,
+        "profile_photo": _build_doc_meta(student.profile_photo_path),
+        "verification_document": _build_doc_meta(student.verification_document_path),
+    }), 200
+
+
+@admin_bp.route("/students/<int:student_id>/verification-documents/<string:doc_type>", methods=["GET"])
+@role_required("admin")
+def stream_student_verification_document(student_id, doc_type):
+    student = Student.query.get_or_404(student_id)
+
+    if doc_type == "profile-photo":
+        path_value = student.profile_photo_path
+    elif doc_type == "verification-document":
+        path_value = student.verification_document_path
+    else:
+        return jsonify({"error": "Unsupported document type"}), 400
+
+    absolute_path = _resolve_backend_upload_abs_path(path_value)
+    if not absolute_path:
+        return jsonify({"error": "Document not found"}), 404
+
+    mime_type = mimetypes.guess_type(absolute_path)[0] or "application/octet-stream"
+    return send_file(absolute_path, mimetype=mime_type, as_attachment=False)
+
+
+@admin_bp.route("/students/<int:student_id>/verification", methods=["PATCH"])
+@role_required("admin")
+def review_student_verification(student_id):
+    admin_id = int(get_jwt_identity())
+    student = Student.query.get_or_404(student_id)
+    data = request.get_json(silent=True) or {}
+
+    action = (data.get("action") or "").strip().lower()
+    note = data.get("note")
+    if action not in {"approve", "reject"}:
+        return jsonify({"error": "action must be approve or reject"}), 400
+
+    student.verification_status = "approved" if action == "approve" else "rejected"
+    student.verified_by = admin_id
+    student.verified_at = db.func.now()
+    student.verification_note = note or None
+    db.session.commit()
+    refresh_compatibility_scores_for_student(student.student_id)
+
+    return jsonify({"message": f"Student verification {student.verification_status}", "student": student.to_dict()}), 200
+
+
+@admin_bp.route("/stay-date-requests", methods=["GET"])
+@role_required("admin")
+def list_stay_date_requests():
+    page, per_page, pagination_error = _parse_pagination_params(default_per_page=20, max_per_page=100)
+    if pagination_error:
+        return pagination_error
+
+    status_filter = (request.args.get("status") or "pending").strip().lower()
+    q = StayDateChangeRequest.query
+    if status_filter in {"pending", "approved", "rejected"}:
+        q = q.filter(StayDateChangeRequest.status == status_filter)
+    q = q.order_by(desc(StayDateChangeRequest.created_at))
+
+    pagination = q.paginate(page=page, per_page=per_page, error_out=False)
+    rows = []
+    for r in pagination.items:
+        student = Student.query.get(r.student_id)
+        rows.append({
+            "request_id": r.request_id,
+            "student_id": r.student_id,
+            "student_name": student.name if student else None,
+            "student_number": student.student_number if student else None,
+            "requested_start": r.requested_start.isoformat() if r.requested_start else None,
+            "requested_end": r.requested_end.isoformat() if r.requested_end else None,
+            "reason": r.reason,
+            "status": r.status,
+            "admin_note": r.admin_note,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+
+    return jsonify({
+        "requests": rows,
+        "total": pagination.total,
+        "page": pagination.page,
+        "per_page": pagination.per_page,
+        "total_pages": pagination.pages,
+    }), 200
+
+
+@admin_bp.route("/stay-date-requests/<int:request_id>/review", methods=["PATCH"])
+@role_required("admin")
+def review_stay_date_request(request_id):
+    admin_id = int(get_jwt_identity())
+    req = StayDateChangeRequest.query.get_or_404(request_id)
+    data = request.get_json(silent=True) or {}
+
+    action = (data.get("action") or "").strip().lower()
+    note = data.get("admin_note")
+    if action not in {"approve", "reject"}:
+        return jsonify({"error": "action must be approve or reject"}), 400
+    if req.status != "pending":
+        return jsonify({"error": "Only pending requests can be reviewed"}), 409
+
+    req.status = "approved" if action == "approve" else "rejected"
+    req.admin_note = note or None
+    req.reviewed_by = admin_id
+    req.reviewed_at = db.func.now()
+
+    if req.status == "approved":
+        student = Student.query.get(req.student_id)
+        if student:
+            student.expected_start_date = req.requested_start
+            student.expected_end_date = req.requested_end
+
+    db.session.commit()
+    if req.status == "approved":
+        refresh_compatibility_scores_for_student(req.student_id)
+    return jsonify({"message": f"Request {req.status}", "request_id": req.request_id}), 200
 
 
 def _parse_pagination_params(default_per_page=20, max_per_page=100):

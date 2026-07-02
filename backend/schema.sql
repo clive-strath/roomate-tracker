@@ -15,10 +15,26 @@ CREATE TABLE IF NOT EXISTS students (
     year            INTEGER       NOT NULL CHECK (year BETWEEN 1 AND 6),
     phone           VARCHAR(20),
     gender          VARCHAR(20),
+    email_verified  BOOLEAN       NOT NULL DEFAULT TRUE,
+    verification_status VARCHAR(10) NOT NULL DEFAULT 'pending'
+                                  CHECK (verification_status IN ('pending', 'approved', 'rejected')),
+    verification_document_path TEXT,
+    verification_note TEXT,
+    verified_by      INTEGER,
+    verified_at      TIMESTAMPTZ,
+    profile_photo_path TEXT,
+    expected_start_date DATE,
+    expected_end_date DATE,
     status          VARCHAR(10)   NOT NULL DEFAULT 'active'
                                   CHECK (status IN ('active', 'inactive')),
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+    updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT valid_stay_dates CHECK (
+        expected_start_date IS NULL OR
+        expected_end_date IS NULL OR
+        expected_end_date > expected_start_date
+    )
 );
 
 -- ── ADMIN USERS ───────────────────────────────────────────────────────────
@@ -37,11 +53,36 @@ CREATE TABLE IF NOT EXISTS admin_users (
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'students_verified_by_fkey'
+    ) THEN
+        ALTER TABLE students
+            ADD CONSTRAINT students_verified_by_fkey
+            FOREIGN KEY (verified_by) REFERENCES admin_users(admin_id) ON DELETE SET NULL;
+    END IF;
+END $$;
+
 -- ── PASSWORD RESET TOKENS ───────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
     reset_id         SERIAL PRIMARY KEY,
     user_type        VARCHAR(20)   NOT NULL CHECK (user_type IN ('student', 'admin')),
     user_id          INTEGER       NOT NULL,
+    token_hash       VARCHAR(64)   NOT NULL UNIQUE,
+    request_ip       VARCHAR(45),
+    expires_at       TIMESTAMPTZ   NOT NULL,
+    used_at          TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- ── EMAIL VERIFICATION TOKENS ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+    verify_id        SERIAL PRIMARY KEY,
+    student_id       INTEGER       NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
     token_hash       VARCHAR(64)   NOT NULL UNIQUE,
     request_ip       VARCHAR(45),
     expires_at       TIMESTAMPTZ   NOT NULL,
@@ -73,10 +114,94 @@ CREATE TABLE IF NOT EXISTS student_preferences (
     bathroom_schedule   INTEGER       NOT NULL CHECK (bathroom_schedule BETWEEN 1 AND 3),
     study_habits        VARCHAR(20)   NOT NULL
                                       CHECK (study_habits IN ('quiet', 'group', 'flexible')),
+    introvert_extrovert INTEGER CHECK (introvert_extrovert BETWEEN 1 AND 5),
+    vaping_habit        INTEGER CHECK (vaping_habit BETWEEN 1 AND 3),
+    field_of_study      VARCHAR(30)
+                                      CHECK (field_of_study IN (
+                                          'stem', 'medicine', 'business', 'arts_humanities',
+                                          'law', 'social_sciences', 'education', 'other'
+                                      )),
+    hobbies             TEXT[],
     additional_notes    TEXT,
     is_locked           BOOLEAN       NOT NULL DEFAULT FALSE,
     created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- ── STAY DATE CHANGE REQUESTS ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS stay_date_change_requests (
+    request_id      SERIAL PRIMARY KEY,
+    student_id      INTEGER     NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    requested_start DATE        NOT NULL,
+    requested_end   DATE        NOT NULL,
+    reason          TEXT,
+    status          VARCHAR(10) NOT NULL DEFAULT 'pending'
+                                CHECK (status IN ('pending', 'approved', 'rejected')),
+    admin_note      TEXT,
+    reviewed_by     INTEGER     REFERENCES admin_users(admin_id) ON DELETE SET NULL,
+    reviewed_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT valid_requested_dates CHECK (requested_end > requested_start)
+);
+
+-- ── STUDENT ALLERGIES ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS student_allergies (
+    allergy_id      SERIAL PRIMARY KEY,
+    student_id      INTEGER NOT NULL UNIQUE REFERENCES students(student_id) ON DELETE CASCADE,
+
+    has_dust_mould_allergy      BOOLEAN NOT NULL DEFAULT FALSE,
+    has_fragrance_sensitivity   BOOLEAN NOT NULL DEFAULT FALSE,
+    has_food_allergy            BOOLEAN NOT NULL DEFAULT FALSE,
+    food_allergy_detail         TEXT,
+    has_latex_allergy           BOOLEAN NOT NULL DEFAULT FALSE,
+    has_chemical_sensitivity    BOOLEAN NOT NULL DEFAULT FALSE,
+    chemical_sensitivity_detail TEXT,
+
+    has_severe_nut_allergy      BOOLEAN NOT NULL DEFAULT FALSE,
+
+    has_smoke_sensitivity            BOOLEAN NOT NULL DEFAULT FALSE,
+    has_asthma_or_respiratory_condition BOOLEAN NOT NULL DEFAULT FALSE,
+
+    heavy_fragrance_user            BOOLEAN NOT NULL DEFAULT FALSE,
+    cooks_strong_smelling_food      BOOLEAN NOT NULL DEFAULT FALSE,
+    uses_strong_cleaning_products   BOOLEAN NOT NULL DEFAULT FALSE,
+    stores_or_eats_nuts_in_room     BOOLEAN NOT NULL DEFAULT FALSE,
+    smoking_habit                   VARCHAR(11) NOT NULL DEFAULT 'no'
+        CHECK (smoking_habit IN ('no', 'occasionally', 'frequently')),
+
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── PREFERRED ROOMMATES ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS preferred_roommates (
+    preference_card_id   SERIAL PRIMARY KEY,
+    student_id           INTEGER NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    preferred_student_id INTEGER NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT no_self_preference CHECK (student_id <> preferred_student_id),
+    CONSTRAINT unique_preference  UNIQUE (student_id, preferred_student_id)
+);
+
+-- ── COMPATIBILITY SCORES ──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS compatibility_scores (
+    score_id          SERIAL PRIMARY KEY,
+    student_id        INTEGER      NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    candidate_id      INTEGER      NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    score             NUMERIC(5,2) NOT NULL CHECK (score >= 0 AND score <= 100),
+    is_hard_blocked   BOOLEAN      NOT NULL DEFAULT FALSE,
+    block_reason      VARCHAR(30)
+        CHECK (
+            block_reason IS NULL OR
+            block_reason IN ('fragrance', 'nut_allergy', 'smoke_respiratory', 'gender_policy', 'stay_dates', 'unverified')
+        ),
+    computed_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT no_self_score       CHECK (student_id <> candidate_id),
+    CONSTRAINT unique_score_pair   UNIQUE (student_id, candidate_id)
 );
 
 -- ── ROOMS ────────────────────────────────────────────────────────────────
@@ -211,6 +336,11 @@ CREATE TRIGGER set_updated_at_password_reset_tokens
     BEFORE UPDATE ON password_reset_tokens
     FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
 
+DROP TRIGGER IF EXISTS set_updated_at_email_verification_tokens ON email_verification_tokens;
+CREATE TRIGGER set_updated_at_email_verification_tokens
+    BEFORE UPDATE ON email_verification_tokens
+    FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
+
 DROP TRIGGER IF EXISTS set_updated_at_student_preferences ON student_preferences;
 CREATE TRIGGER set_updated_at_student_preferences
     BEFORE UPDATE ON student_preferences
@@ -229,6 +359,16 @@ CREATE TRIGGER set_updated_at_room_assignments
 DROP TRIGGER IF EXISTS set_updated_at_conflict_logs ON conflict_logs;
 CREATE TRIGGER set_updated_at_conflict_logs
     BEFORE UPDATE ON conflict_logs
+    FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS set_updated_at_stay_requests ON stay_date_change_requests;
+CREATE TRIGGER set_updated_at_stay_requests
+    BEFORE UPDATE ON stay_date_change_requests
+    FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
+
+DROP TRIGGER IF EXISTS set_updated_at_student_allergies ON student_allergies;
+CREATE TRIGGER set_updated_at_student_allergies
+    BEFORE UPDATE ON student_allergies
     FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
 
 CREATE OR REPLACE FUNCTION trigger_sync_room_status()
@@ -267,6 +407,9 @@ CREATE TRIGGER sync_room_status_on_assignment
 CREATE INDEX IF NOT EXISTS idx_students_email          ON students(email);
 CREATE INDEX IF NOT EXISTS idx_students_student_number ON students(student_number);
 CREATE INDEX IF NOT EXISTS idx_students_status         ON students(status);
+CREATE INDEX IF NOT EXISTS idx_students_email_verified ON students(email_verified);
+CREATE INDEX IF NOT EXISTS idx_students_verification   ON students(verification_status);
+CREATE INDEX IF NOT EXISTS idx_students_stay_dates     ON students(expected_start_date, expected_end_date);
 
 CREATE INDEX IF NOT EXISTS idx_admin_users_email       ON admin_users(email);
 CREATE INDEX IF NOT EXISTS idx_admin_users_role        ON admin_users(role);
@@ -276,12 +419,32 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_user     ON password_reset_tokens(
 CREATE INDEX IF NOT EXISTS idx_password_reset_expires  ON password_reset_tokens(expires_at);
 CREATE INDEX IF NOT EXISTS idx_password_reset_used     ON password_reset_tokens(used_at);
 
+CREATE INDEX IF NOT EXISTS idx_email_verify_student    ON email_verification_tokens(student_id);
+CREATE INDEX IF NOT EXISTS idx_email_verify_expires    ON email_verification_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_email_verify_used       ON email_verification_tokens(used_at);
+
 CREATE INDEX IF NOT EXISTS idx_token_blocklist_jti      ON token_blocklist(jti);
 CREATE INDEX IF NOT EXISTS idx_token_blocklist_user     ON token_blocklist(user_identity);
 CREATE INDEX IF NOT EXISTS idx_token_blocklist_expires  ON token_blocklist(expires_at);
 
 CREATE INDEX IF NOT EXISTS idx_preferences_student     ON student_preferences(student_id);
 CREATE INDEX IF NOT EXISTS idx_preferences_locked      ON student_preferences(is_locked);
+CREATE INDEX IF NOT EXISTS idx_pref_field_of_study     ON student_preferences(field_of_study);
+CREATE INDEX IF NOT EXISTS idx_pref_vaping             ON student_preferences(vaping_habit);
+CREATE INDEX IF NOT EXISTS idx_pref_introvert          ON student_preferences(introvert_extrovert);
+
+CREATE INDEX IF NOT EXISTS idx_stay_requests_student   ON stay_date_change_requests(student_id);
+CREATE INDEX IF NOT EXISTS idx_stay_requests_status    ON stay_date_change_requests(status);
+
+CREATE INDEX IF NOT EXISTS idx_allergies_student       ON student_allergies(student_id);
+
+CREATE INDEX IF NOT EXISTS idx_preferred_from          ON preferred_roommates(student_id);
+CREATE INDEX IF NOT EXISTS idx_preferred_target        ON preferred_roommates(preferred_student_id);
+
+CREATE INDEX IF NOT EXISTS idx_compat_student          ON compatibility_scores(student_id);
+CREATE INDEX IF NOT EXISTS idx_compat_candidate        ON compatibility_scores(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_compat_score            ON compatibility_scores(student_id, score DESC);
+CREATE INDEX IF NOT EXISTS idx_compat_blocked          ON compatibility_scores(is_hard_blocked);
 
 CREATE INDEX IF NOT EXISTS idx_rooms_block             ON rooms(hostel_block);
 CREATE INDEX IF NOT EXISTS idx_rooms_status            ON rooms(status);
