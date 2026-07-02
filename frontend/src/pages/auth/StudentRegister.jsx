@@ -164,7 +164,6 @@ export default function StudentRegister() {
                 <option value="">Select gender</option>
                 <option value="male">Male</option>
                 <option value="female">Female</option>
-                <option value="prefer_not_to_say">Prefer not to say</option>
               </select>
               {errors.gender && <span className="form-input-error">{errors.gender}</span>}
             </div>
