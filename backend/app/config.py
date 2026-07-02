@@ -23,6 +23,11 @@ class Config:
     CORS_ORIGINS                  = os.getenv("FRONTEND_URL", "http://localhost:5173")
     PASSWORD_RESET_TOKEN_EXPIRES_MINUTES = int(os.getenv("PASSWORD_RESET_TOKEN_EXPIRES_MINUTES", 30))
     FRONTEND_RESET_PASSWORD_URL   = os.getenv("FRONTEND_RESET_PASSWORD_URL", "http://localhost:5173/reset-password")
+    EMAIL_VERIFY_TOKEN_EXPIRES_MINUTES = int(os.getenv("EMAIL_VERIFY_TOKEN_EXPIRES_MINUTES", 60))
+    FRONTEND_VERIFY_EMAIL_URL     = os.getenv("FRONTEND_VERIFY_EMAIL_URL", "http://localhost:5173/verify-email")
+    GOOGLE_CLIENT_ID              = os.getenv("GOOGLE_CLIENT_ID", "")
+    UPLOADS_DIR                   = os.getenv("UPLOADS_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "uploads")))
+    MAX_UPLOAD_BYTES              = int(os.getenv("MAX_UPLOAD_MB", "5")) * 1024 * 1024
 
     SMTP_HOST                     = os.getenv("SMTP_HOST", "smtp.gmail.com")
     SMTP_PORT                     = int(os.getenv("SMTP_PORT", 587))

@@ -19,6 +19,9 @@ export default function StudentRegister() {
   const [errors,  setErrors]  = useState({});
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -63,7 +66,7 @@ export default function StudentRegister() {
 
     setLoading(true);
     try {
-      await api.post("/auth/register", {
+      const res = await api.post("/auth/register", {
         name:           form.name,
         student_number: form.student_number.toUpperCase(),
         email:          form.email,
@@ -73,7 +76,8 @@ export default function StudentRegister() {
         password:       form.password,
       });
       setSuccess(true);
-      setTimeout(() => navigate("/login"), 2000);
+      setSuccessMessage(res.data?.message || "Registration successful. Please verify your email before logging in.");
+      setTimeout(() => navigate("/login"), 2500);
     } catch (err) {
       const msg = err.response?.data?.error || "Registration failed. Try again.";
       setErrors({ server: msg });
@@ -96,7 +100,7 @@ export default function StudentRegister() {
         {success && (
           <div className="banner banner-success">
             <span className="banner-icon">✓</span>
-            <div>Registration successful! Redirecting to login...</div>
+            <div>{successMessage || "Registration successful. Check your email for the verification link. Redirecting to login..."}</div>
           </div>
         )}
         {errors.server && (
@@ -205,12 +209,20 @@ export default function StudentRegister() {
               <label className="form-label">Password</label>
               <input
                 name="password"
-                type="password"
+                type={showPassword ? "text" : "password"}
                 className={`form-input ${errors.password ? "error" : ""}`}
                 value={form.password}
                 onChange={handleChange}
                 placeholder="Min 8 characters"
               />
+              <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", marginTop: "8px", fontSize: "13px", color: "var(--text-muted)" }}>
+                <input
+                  type="checkbox"
+                  checked={showPassword}
+                  onChange={(e) => setShowPassword(e.target.checked)}
+                />
+                Show password
+              </label>
               {errors.password && <span className="form-input-error">{errors.password}</span>}
             </div>
 
@@ -219,12 +231,20 @@ export default function StudentRegister() {
               <label className="form-label">Confirm Password</label>
               <input
                 name="confirmPassword"
-                type="password"
+                type={showConfirmPassword ? "text" : "password"}
                 className={`form-input ${errors.confirmPassword ? "error" : ""}`}
                 value={form.confirmPassword}
                 onChange={handleChange}
                 placeholder="Repeat password"
               />
+              <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", marginTop: "8px", fontSize: "13px", color: "var(--text-muted)" }}>
+                <input
+                  type="checkbox"
+                  checked={showConfirmPassword}
+                  onChange={(e) => setShowConfirmPassword(e.target.checked)}
+                />
+                Show confirm password
+              </label>
               {errors.confirmPassword && <span className="form-input-error">{errors.confirmPassword}</span>}
             </div>
           </div>
