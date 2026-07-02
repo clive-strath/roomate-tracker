@@ -5,6 +5,7 @@ import Navbar from "../../components/Navbar";
 
 export default function AdminDashboard() {
   const { role } = useAuth();
+  const [activeSection, setActiveSection] = useState("overview");
 
   const [data, setData] = useState({ students: [], total: 0, submitted: 0, not_submitted: 0 });
   const [loading, setLoading] = useState(true);
@@ -92,6 +93,31 @@ export default function AdminDashboard() {
   const [overrideTarget, setOverrideTarget] = useState(null);
   const [overrideReplacementId, setOverrideReplacementId] = useState("");
   const [overrideSubmitting, setOverrideSubmitting] = useState(false);
+
+  // Supervisor workflow state (moved from Admin Supervisor Tools)
+  const [verificationRows, setVerificationRows] = useState([]);
+  const [verificationLoading, setVerificationLoading] = useState(false);
+  const [reviewVerificationTarget, setReviewVerificationTarget] = useState(null);
+  const [verificationReviewNote, setVerificationReviewNote] = useState("");
+  const [selectedVerificationStudent, setSelectedVerificationStudent] = useState(null);
+  const [verificationDocsLoading, setVerificationDocsLoading] = useState(false);
+  const [verificationDocs, setVerificationDocs] = useState(null);
+  const [profilePhotoPreviewUrl, setProfilePhotoPreviewUrl] = useState("");
+  const [verificationDocPreviewUrl, setVerificationDocPreviewUrl] = useState("");
+  const [verificationDocMimeType, setVerificationDocMimeType] = useState("");
+
+  const [stayReviewRows, setStayReviewRows] = useState([]);
+  const [stayReviewLoading, setStayReviewLoading] = useState(false);
+  const [reviewStayTarget, setReviewStayTarget] = useState(null);
+  const [stayReviewNote, setStayReviewNote] = useState("");
+
+  const [studentIdInput, setStudentIdInput] = useState("");
+  const [studentLookup, setStudentLookup] = useState("");
+  const [studentLookupRows, setStudentLookupRows] = useState([]);
+  const [studentLookupLoading, setStudentLookupLoading] = useState(false);
+  const [diagScores, setDiagScores] = useState([]);
+  const [diagSummary, setDiagSummary] = useState(null);
+  const [diagLoading, setDiagLoading] = useState(false);
 
   const clearAllocationBanners = () => {
     setAllocError("");
@@ -683,6 +709,159 @@ export default function AdminDashboard() {
     }
   };
 
+  const clearDocPreviews = () => {
+    if (profilePhotoPreviewUrl) URL.revokeObjectURL(profilePhotoPreviewUrl);
+    if (verificationDocPreviewUrl) URL.revokeObjectURL(verificationDocPreviewUrl);
+    setProfilePhotoPreviewUrl("");
+    setVerificationDocPreviewUrl("");
+    setVerificationDocMimeType("");
+  };
+
+  const loadVerificationQueue = async () => {
+    setVerificationLoading(true);
+    try {
+      const res = await api.get("/admin/students/verification/pending?page=1&per_page=50");
+      setVerificationRows(res.data?.students || []);
+    } catch (err) {
+      setAllocError(err.response?.data?.error || "Failed to load pending verifications.");
+    } finally {
+      setVerificationLoading(false);
+    }
+  };
+
+  const loadVerificationDocuments = async (student) => {
+    setSelectedVerificationStudent(student);
+    setVerificationDocsLoading(true);
+    clearDocPreviews();
+
+    try {
+      const metaRes = await api.get(`/admin/students/${student.student_id}/verification-documents`);
+      const payload = metaRes.data || null;
+      setVerificationDocs(payload);
+
+      if (payload?.profile_photo?.available) {
+        const profileBlobRes = await api.get(`/admin/students/${student.student_id}/verification-documents/profile-photo`, { responseType: "blob" });
+        setProfilePhotoPreviewUrl(URL.createObjectURL(profileBlobRes.data));
+      }
+
+      if (payload?.verification_document?.available) {
+        const verificationBlobRes = await api.get(`/admin/students/${student.student_id}/verification-documents/verification-document`, { responseType: "blob" });
+        setVerificationDocPreviewUrl(URL.createObjectURL(verificationBlobRes.data));
+        setVerificationDocMimeType(verificationBlobRes.data?.type || payload?.verification_document?.mime_type || "");
+      }
+    } catch (err) {
+      setVerificationDocs(null);
+      clearDocPreviews();
+      setAllocError(err.response?.data?.error || "Failed to load submitted documents.");
+    } finally {
+      setVerificationDocsLoading(false);
+    }
+  };
+
+  const submitVerificationReview = async () => {
+    if (!reviewVerificationTarget) return;
+    try {
+      await api.patch(`/admin/students/${reviewVerificationTarget.student_id}/verification`, {
+        action: reviewVerificationTarget.action,
+        note: verificationReviewNote,
+      });
+      setReviewVerificationTarget(null);
+      setVerificationReviewNote("");
+      await loadVerificationQueue();
+      if (selectedVerificationStudent?.student_id === reviewVerificationTarget.student_id) {
+        await loadVerificationDocuments(selectedVerificationStudent);
+      }
+      setActionMessage(`Verification ${reviewVerificationTarget.action}d successfully.`);
+      setTimeout(() => setActionMessage(""), 3000);
+    } catch (err) {
+      setAllocError(err.response?.data?.error || "Failed to review verification.");
+    }
+  };
+
+  const loadStayReviewQueue = async () => {
+    setStayReviewLoading(true);
+    try {
+      const res = await api.get("/admin/stay-date-requests?status=pending&page=1&per_page=50");
+      setStayReviewRows(res.data?.requests || []);
+    } catch (err) {
+      setAllocError(err.response?.data?.error || "Failed to load stay-date requests.");
+    } finally {
+      setStayReviewLoading(false);
+    }
+  };
+
+  const submitStayReview = async () => {
+    if (!reviewStayTarget) return;
+    try {
+      await api.patch(`/admin/stay-date-requests/${reviewStayTarget.request_id}/review`, {
+        action: reviewStayTarget.action,
+        admin_note: stayReviewNote,
+      });
+      setReviewStayTarget(null);
+      setStayReviewNote("");
+      await loadStayReviewQueue();
+      setActionMessage(`Stay-date request ${reviewStayTarget.action}d successfully.`);
+      setTimeout(() => setActionMessage(""), 3000);
+    } catch (err) {
+      setAllocError(err.response?.data?.error || "Failed to review stay-date request.");
+    }
+  };
+
+  const loadDiagnostics = async (studentId) => {
+    setDiagLoading(true);
+    try {
+      const [scoresRes, summaryRes] = await Promise.all([
+        api.get(`/admin/students/${studentId}/compatibility/scores?limit=25&include_blocked=true`),
+        api.get(`/admin/students/${studentId}/compatibility/summary`),
+      ]);
+      setDiagScores(scoresRes.data?.scores || []);
+      setDiagSummary(summaryRes.data || null);
+    } catch (err) {
+      setDiagScores([]);
+      setDiagSummary(null);
+      setAllocError(err.response?.data?.error || "Failed to load compatibility diagnostics.");
+    } finally {
+      setDiagLoading(false);
+    }
+  };
+
+  const lookupStudents = async () => {
+    const term = (studentLookup || "").trim();
+    if (!term) {
+      setStudentLookupRows([]);
+      return;
+    }
+
+    setStudentLookupLoading(true);
+    try {
+      const query = new URLSearchParams({ search: term, page: "1", per_page: "10" });
+      const res = await api.get(`/admin/students?${query.toString()}`);
+      setStudentLookupRows(res.data?.students || []);
+    } catch (err) {
+      setStudentLookupRows([]);
+      setAllocError(err.response?.data?.error || "Failed to search students.");
+    } finally {
+      setStudentLookupLoading(false);
+    }
+  };
+
+  const refreshCompatibility = async () => {
+    const sid = Number(studentIdInput);
+    if (!Number.isInteger(sid) || sid <= 0) {
+      setAllocError("Enter a valid student ID first.");
+      return;
+    }
+
+    try {
+      await api.post(`/admin/students/${sid}/compatibility/refresh`);
+      await loadDiagnostics(sid);
+      setActionMessage("Compatibility scores refreshed for selected student.");
+      setTimeout(() => setActionMessage(""), 3000);
+    } catch (err) {
+      setAllocError(err.response?.data?.error || "Failed to refresh compatibility.");
+    }
+  };
+
   useEffect(() => {
     fetchRoomAvailability();
   }, []);
@@ -745,9 +924,49 @@ export default function AdminDashboard() {
     conflictFilters.sort_order,
   ]);
 
+  useEffect(() => {
+    loadVerificationQueue();
+    loadStayReviewQueue();
+  }, []);
+
+  useEffect(() => {
+    if (activeSection === "verification") {
+      loadVerificationQueue();
+    }
+    if (activeSection === "stay-requests") {
+      loadStayReviewQueue();
+    }
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (activeSection === "verification" && !verificationLoading && verificationRows.length === 0) {
+      setActiveSection("overview");
+      setSelectedVerificationStudent(null);
+      setVerificationDocs(null);
+      clearDocPreviews();
+    }
+  }, [activeSection, verificationLoading, verificationRows.length]);
+
+  useEffect(() => {
+    if (activeSection === "stay-requests" && !stayReviewLoading && stayReviewRows.length === 0) {
+      setActiveSection("overview");
+    }
+  }, [activeSection, stayReviewLoading, stayReviewRows.length]);
+
+  useEffect(() => {
+    return () => {
+      if (profilePhotoPreviewUrl) URL.revokeObjectURL(profilePhotoPreviewUrl);
+      if (verificationDocPreviewUrl) URL.revokeObjectURL(verificationDocPreviewUrl);
+    };
+  }, [profilePhotoPreviewUrl, verificationDocPreviewUrl]);
+
   const openCount = conflicts.filter((c) => c.status === "open").length;
   const mediationCount = conflicts.filter((c) => c.status === "in_mediation").length;
   const escalatedCount = conflicts.filter((c) => c.status === "escalated").length;
+  const verificationPendingCount = verificationRows.length;
+  const stayPendingCount = stayReviewRows.length;
+  const verificationTabDisabled = !verificationLoading && verificationPendingCount === 0;
+  const stayRequestsTabDisabled = !stayReviewLoading && stayPendingCount === 0;
 
   const handleDisable = async (studentId, studentName) => {
     if (window.confirm(`Are you sure you want to deactivate student ${studentName}?`)) {
@@ -877,13 +1096,6 @@ export default function AdminDashboard() {
     }
   };
 
-  const scrollToSection = (sectionId) => {
-    const target = document.getElementById(sectionId);
-    if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  };
-
   return (
     <div className="page-container">
       <Navbar />
@@ -893,11 +1105,36 @@ export default function AdminDashboard() {
             <div className="admin-sidebar-card">
               <h3 className="admin-sidebar-title">Admin Navigation</h3>
               <div className="admin-sidebar-links">
-                <button type="button" className="admin-nav-btn" onClick={() => scrollToSection("overview-section")}>Overview</button>
-                <button type="button" className="admin-nav-btn" onClick={() => scrollToSection("students-section")}>Students</button>
-                <button type="button" className="admin-nav-btn" onClick={() => scrollToSection("assignments-section")}>Assignments</button>
-                <button type="button" className="admin-nav-btn" onClick={() => scrollToSection("allocation-section")}>Allocation</button>
-                <button type="button" className="admin-nav-btn" onClick={() => scrollToSection("conflicts-section")}>Conflicts</button>
+                <button type="button" className={`admin-nav-btn ${activeSection === "overview" ? "active" : ""}`} onClick={() => setActiveSection("overview")}>Overview</button>
+                <button type="button" className={`admin-nav-btn ${activeSection === "students" ? "active" : ""}`} onClick={() => setActiveSection("students")}>Students</button>
+                <button type="button" className={`admin-nav-btn ${activeSection === "assignments" ? "active" : ""}`} onClick={() => setActiveSection("assignments")}>Assignments</button>
+                <button type="button" className={`admin-nav-btn ${activeSection === "allocation" ? "active" : ""}`} onClick={() => setActiveSection("allocation")}>Allocation</button>
+                <button type="button" className={`admin-nav-btn ${activeSection === "conflicts" ? "active" : ""}`} onClick={() => setActiveSection("conflicts")}>Conflicts</button>
+                <button
+                  type="button"
+                  className={`admin-nav-btn ${activeSection === "verification" ? "active" : ""}`}
+                  onClick={() => setActiveSection("verification")}
+                  disabled={verificationTabDisabled}
+                  title={verificationTabDisabled ? "No pending verification approvals" : "Verification Queue"}
+                >
+                  Verification Queue
+                  <span style={{ marginLeft: "8px", fontSize: "12px", fontWeight: 700, minWidth: "18px", textAlign: "center", padding: "1px 6px", borderRadius: "999px", background: verificationPendingCount > 0 ? "var(--primary)" : "var(--surface-muted)", color: verificationPendingCount > 0 ? "#fff" : "var(--text-muted)" }}>
+                    {verificationPendingCount}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={`admin-nav-btn ${activeSection === "stay-requests" ? "active" : ""}`}
+                  onClick={() => setActiveSection("stay-requests")}
+                  disabled={stayRequestsTabDisabled}
+                  title={stayRequestsTabDisabled ? "No pending stay-date approvals" : "Stay-Date Requests"}
+                >
+                  Stay-Date Requests
+                  <span style={{ marginLeft: "8px", fontSize: "12px", fontWeight: 700, minWidth: "18px", textAlign: "center", padding: "1px 6px", borderRadius: "999px", background: stayPendingCount > 0 ? "var(--primary)" : "var(--surface-muted)", color: stayPendingCount > 0 ? "#fff" : "var(--text-muted)" }}>
+                    {stayPendingCount}
+                  </span>
+                </button>
+                <button type="button" className={`admin-nav-btn ${activeSection === "diagnostics" ? "active" : ""}`} onClick={() => setActiveSection("diagnostics")}>Compatibility Diagnostics</button>
               </div>
               <button
                 type="button"
@@ -919,13 +1156,15 @@ export default function AdminDashboard() {
             </p>
           </div>
           {role === "admin" && (
-            <button
-              onClick={handleModalOpen}
-              className="btn btn-primary"
-              style={{ padding: "10px 20px", fontSize: "14px", borderRadius: "4px" }}
-            >
-              Create Staff Account
-            </button>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button
+                onClick={handleModalOpen}
+                className="btn btn-primary"
+                style={{ padding: "10px 20px", fontSize: "14px", borderRadius: "4px" }}
+              >
+                Create Staff Account
+              </button>
+            </div>
           )}
         </div>
 
@@ -950,7 +1189,7 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* Stats Section */}
+        {activeSection === "overview" && (
         <div id="overview-section" className="stats-panel">
           <div className="stat-card stat-card-indigo">
             <div className="stat-value">{data.total}</div>
@@ -965,8 +1204,9 @@ export default function AdminDashboard() {
             <div className="stat-label">Profile Incomplete</div>
           </div>
         </div>
+        )}
 
-        {/* Table List Card */}
+        {activeSection === "students" && (
         <div id="students-section" className="card">
           <div className="table-controls">
             <h3 className="card-title" style={{ margin: 0 }}>
@@ -1009,7 +1249,6 @@ export default function AdminDashboard() {
                 <option value="">All Genders</option>
                 <option value="male">Male</option>
                 <option value="female">Female</option>
-                <option value="prefer_not_to_say">Prefer Not to Say</option>
               </select>
 
               <select
@@ -1123,7 +1362,9 @@ export default function AdminDashboard() {
             </div>
           </div>
         </div>
+        )}
 
+        {activeSection === "assignments" && (
         <div id="assignments-section" className="card">
           <div className="table-controls" style={{ marginBottom: "12px" }}>
             <h3 className="card-title" style={{ margin: 0 }}>
@@ -1275,8 +1516,9 @@ export default function AdminDashboard() {
             </div>
           </div>
         </div>
+        )}
 
-        {/* Allocation Dashboard Card */}
+        {activeSection === "allocation" && (
         <div id="allocation-section" className="card">
           <div className="table-controls" style={{ marginBottom: "16px" }}>
             <h3 className="card-title" style={{ margin: 0 }}>
@@ -1491,8 +1733,9 @@ export default function AdminDashboard() {
             </div>
           )}
         </div>
+        )}
 
-        {/* Secondary Row */}
+        {activeSection === "conflicts" && (
         <div className="dashboard-grid">
           <div id="conflicts-section" className="card" style={{ marginBottom: 0 }}>
             <h3 className="card-title">
@@ -1684,9 +1927,259 @@ export default function AdminDashboard() {
           </div>
 
         </div>
+        )}
+
+        {activeSection === "verification" && (
+        <div className="card">
+          <div className="table-controls" style={{ marginBottom: "10px" }}>
+            <h3 className="card-title" style={{ margin: 0 }}><span>🪪</span> Pending Verification Queue</h3>
+            <button className="btn btn-secondary" onClick={loadVerificationQueue}>Refresh</button>
+          </div>
+          <div className="table-responsive">
+            <table className="custom-table">
+              <thead>
+                <tr>
+                  <th>Student</th>
+                  <th>Student Number</th>
+                  <th>Email</th>
+                  <th>Submitted</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {verificationLoading ? (
+                  <tr><td colSpan="5" style={{ textAlign: "center", color: "var(--text-muted)" }}>Loading queue...</td></tr>
+                ) : verificationRows.length === 0 ? (
+                  <tr><td colSpan="5" style={{ textAlign: "center", color: "var(--text-muted)" }}>No pending verification submissions.</td></tr>
+                ) : verificationRows.map((row) => (
+                  <tr key={row.student_id}>
+                    <td>{row.name}</td>
+                    <td>{row.student_number}</td>
+                    <td>{row.email}</td>
+                    <td>{row.created_at ? new Date(row.created_at).toLocaleDateString() : "-"}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button className="btn btn-secondary" style={{ padding: "6px 10px", fontSize: "12px" }} onClick={() => loadVerificationDocuments(row)}>View Docs</button>
+                        <button className="btn btn-primary" style={{ padding: "6px 10px", fontSize: "12px" }} onClick={() => { setReviewVerificationTarget({ ...row, action: "approve" }); setVerificationReviewNote(""); }}>Approve</button>
+                        <button className="btn btn-danger" style={{ padding: "6px 10px", fontSize: "12px" }} onClick={() => { setReviewVerificationTarget({ ...row, action: "reject" }); setVerificationReviewNote(""); }}>Reject</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {(selectedVerificationStudent || verificationDocsLoading) && (
+            <div style={{ marginTop: "14px", borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
+              <h4 style={{ marginBottom: "10px" }}>Submitted Documents: {selectedVerificationStudent?.name || "Selected Student"}</h4>
+              {verificationDocsLoading ? (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading submitted documents...</p>
+              ) : (
+                <div className="dashboard-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: "14px", marginTop: 0 }}>
+                  <div style={{ border: "1px solid var(--border-color)", borderRadius: "10px", padding: "10px" }}>
+                    <h5 style={{ marginBottom: "8px" }}>Profile Photo</h5>
+                    {profilePhotoPreviewUrl ? (
+                      <img src={profilePhotoPreviewUrl} alt="Submitted profile" style={{ width: "100%", maxHeight: "280px", objectFit: "contain", borderRadius: "8px", border: "1px solid var(--border-color)" }} />
+                    ) : (
+                      <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>No profile photo submitted.</p>
+                    )}
+                  </div>
+                  <div style={{ border: "1px solid var(--border-color)", borderRadius: "10px", padding: "10px" }}>
+                    <h5 style={{ marginBottom: "8px" }}>Verification Document</h5>
+                    {verificationDocPreviewUrl ? (
+                      verificationDocMimeType.includes("pdf") ? (
+                        <iframe src={verificationDocPreviewUrl} title="Verification document preview" style={{ width: "100%", height: "320px", border: "1px solid var(--border-color)", borderRadius: "8px" }} />
+                      ) : (
+                        <img src={verificationDocPreviewUrl} alt="Verification document" style={{ width: "100%", maxHeight: "280px", objectFit: "contain", borderRadius: "8px", border: "1px solid var(--border-color)" }} />
+                      )
+                    ) : (
+                      <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>No verification document submitted.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        )}
+
+        {activeSection === "stay-requests" && (
+        <div className="card">
+          <div className="table-controls" style={{ marginBottom: "10px" }}>
+            <h3 className="card-title" style={{ margin: 0 }}><span>🗓️</span> Pending Stay-Date Requests</h3>
+            <button className="btn btn-secondary" onClick={loadStayReviewQueue}>Refresh</button>
+          </div>
+          <div className="table-responsive">
+            <table className="custom-table">
+              <thead>
+                <tr>
+                  <th>Request</th>
+                  <th>Student</th>
+                  <th>Date Range</th>
+                  <th>Reason</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stayReviewLoading ? (
+                  <tr><td colSpan="5" style={{ textAlign: "center", color: "var(--text-muted)" }}>Loading requests...</td></tr>
+                ) : stayReviewRows.length === 0 ? (
+                  <tr><td colSpan="5" style={{ textAlign: "center", color: "var(--text-muted)" }}>No pending stay-date requests.</td></tr>
+                ) : stayReviewRows.map((row) => (
+                  <tr key={row.request_id}>
+                    <td>#{row.request_id}</td>
+                    <td>{row.student_name} ({row.student_number})</td>
+                    <td>{row.requested_start} - {row.requested_end}</td>
+                    <td>{row.reason || "-"}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button className="btn btn-primary" style={{ padding: "6px 10px", fontSize: "12px" }} onClick={() => { setReviewStayTarget({ ...row, action: "approve" }); setStayReviewNote(""); }}>Approve</button>
+                        <button className="btn btn-danger" style={{ padding: "6px 10px", fontSize: "12px" }} onClick={() => { setReviewStayTarget({ ...row, action: "reject" }); setStayReviewNote(""); }}>Reject</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        )}
+
+        {activeSection === "diagnostics" && (
+        <div className="card">
+          <h3 className="card-title"><span>📈</span> Compatibility Diagnostics</h3>
+          <div className="form-group" style={{ marginBottom: "12px" }}>
+            <label className="form-label">Find Student by Name, Student Number, or Email</label>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <input className="form-input" style={{ maxWidth: "360px" }} placeholder="Search students..." value={studentLookup} onChange={(e) => setStudentLookup(e.target.value)} />
+              <button className="btn btn-secondary" onClick={lookupStudents}>Search</button>
+            </div>
+
+            {studentLookupLoading && <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "8px" }}>Searching students...</p>}
+            {!studentLookupLoading && studentLookupRows.length > 0 && (
+              <div style={{ marginTop: "8px", display: "grid", gap: "6px" }}>
+                {studentLookupRows.map((row) => (
+                  <button
+                    key={row.student_id}
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ justifyContent: "space-between", textAlign: "left" }}
+                    onClick={() => {
+                      setStudentIdInput(String(row.student_id));
+                      setStudentLookupRows([]);
+                      setStudentLookup("");
+                      loadDiagnostics(row.student_id);
+                    }}
+                  >
+                    <span>{row.name} ({row.student_number})</span>
+                    <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>ID {row.student_id}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: "flex", gap: "8px", marginBottom: "12px", flexWrap: "wrap" }}>
+            <input className="form-input" style={{ maxWidth: "260px" }} placeholder="Enter student ID" value={studentIdInput} onChange={(e) => setStudentIdInput(e.target.value)} />
+            <button className="btn btn-secondary" onClick={() => {
+              const sid = Number(studentIdInput);
+              if (Number.isInteger(sid) && sid > 0) loadDiagnostics(sid);
+              else setAllocError("Enter a valid student ID first.");
+            }}>
+              Load Diagnostics
+            </button>
+            <button className="btn btn-primary" onClick={refreshCompatibility}>Refresh Scores</button>
+          </div>
+
+          {diagSummary && (
+            <div className="stats-panel" style={{ marginBottom: "12px" }}>
+              <div className="stat-card stat-card-indigo">
+                <div className="stat-value">{diagSummary.total_candidates}</div>
+                <div className="stat-label">Total candidates</div>
+              </div>
+              <div className="stat-card stat-card-rose">
+                <div className="stat-value">{diagSummary.blocked_candidates}</div>
+                <div className="stat-label">Hard blocked</div>
+              </div>
+              <div className="stat-card stat-card-teal">
+                <div className="stat-value">{diagSummary.eligible_candidates}</div>
+                <div className="stat-label">Eligible</div>
+              </div>
+            </div>
+          )}
+
+          <div className="table-responsive">
+            <table className="custom-table">
+              <thead>
+                <tr>
+                  <th>Candidate ID</th>
+                  <th>Score</th>
+                  <th>Blocked</th>
+                  <th>Reason</th>
+                  <th>Computed At</th>
+                </tr>
+              </thead>
+              <tbody>
+                {diagLoading ? (
+                  <tr><td colSpan="5" style={{ textAlign: "center", color: "var(--text-muted)" }}>Loading diagnostics...</td></tr>
+                ) : diagScores.length === 0 ? (
+                  <tr><td colSpan="5" style={{ textAlign: "center", color: "var(--text-muted)" }}>No compatibility diagnostics loaded.</td></tr>
+                ) : diagScores.map((row) => (
+                  <tr key={`${row.candidate_id}-${row.computed_at || "na"}`}>
+                    <td>{row.candidate_id}</td>
+                    <td>{row.score}</td>
+                    <td>{row.is_hard_blocked ? "Yes" : "No"}</td>
+                    <td>{row.block_reason || "-"}</td>
+                    <td>{row.computed_at ? new Date(row.computed_at).toLocaleString() : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        )}
           </div>
         </div>
       </div>
+
+      {reviewVerificationTarget && (
+        <div className="modal-backdrop" onClick={() => setReviewVerificationTarget(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{reviewVerificationTarget.action === "approve" ? "Approve" : "Reject"} Verification</h3>
+              <button className="modal-close" onClick={() => setReviewVerificationTarget(null)}>×</button>
+            </div>
+            <div style={{ marginTop: "12px", display: "grid", gap: "10px" }}>
+              <p>Student: <strong>{reviewVerificationTarget.name}</strong></p>
+              <textarea className="form-textarea" rows={4} placeholder="Optional note..." value={verificationReviewNote} onChange={(e) => setVerificationReviewNote(e.target.value)} />
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+                <button className="btn btn-secondary" onClick={() => setReviewVerificationTarget(null)}>Cancel</button>
+                <button className="btn btn-primary" onClick={submitVerificationReview}>Submit</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reviewStayTarget && (
+        <div className="modal-backdrop" onClick={() => setReviewStayTarget(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{reviewStayTarget.action === "approve" ? "Approve" : "Reject"} Stay-Date Request</h3>
+              <button className="modal-close" onClick={() => setReviewStayTarget(null)}>×</button>
+            </div>
+            <div style={{ marginTop: "12px", display: "grid", gap: "10px" }}>
+              <p>Request: <strong>#{reviewStayTarget.request_id}</strong></p>
+              <textarea className="form-textarea" rows={4} placeholder="Optional admin note..." value={stayReviewNote} onChange={(e) => setStayReviewNote(e.target.value)} />
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+                <button className="btn btn-secondary" onClick={() => setReviewStayTarget(null)}>Cancel</button>
+                <button className="btn btn-primary" onClick={submitStayReview}>Submit</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal */}
       {modalOpen && (

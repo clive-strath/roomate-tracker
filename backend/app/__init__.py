@@ -1,4 +1,6 @@
-from flask import Flask
+from pathlib import Path
+
+from flask import Flask, abort, send_from_directory
 from .config import Config
 from .extensions import db, jwt, bcrypt, cors, limiter
 
@@ -45,5 +47,18 @@ def create_app():
     app.register_blueprint(preferences_bp, url_prefix="/api/preferences")
     app.register_blueprint(admin_bp,       url_prefix="/api/admin")
     app.register_blueprint(conflicts_bp,   url_prefix="/api")
+
+    @app.get("/uploads/<path:relative_path>")
+    def serve_profile_upload(relative_path):
+        # Only expose profile photos through this route.
+        normalized = Path(relative_path).as_posix().lstrip("/")
+        if not normalized.startswith("profile_photos/"):
+            abort(404)
+
+        uploads_dir = app.config.get("UPLOADS_DIR")
+        if not uploads_dir:
+            abort(404)
+
+        return send_from_directory(uploads_dir, normalized)
 
     return app

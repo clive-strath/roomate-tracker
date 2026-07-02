@@ -1,5 +1,12 @@
 from app.extensions import db
-from app.models import Student, StudentPreference, Room, RoomAssignment
+from app.models import (
+    Student,
+    StudentPreference,
+    StudentAllergy,
+    PreferredRoommate,
+    Room,
+    RoomAssignment,
+)
 from app.services.compatibility_engine import (
     calculate_compatibility,
     build_compatibility_graph,
@@ -31,8 +38,12 @@ def get_eligible_students(semester, waiting_student_ids=None):
     """
     waiting_student_ids = waiting_student_ids or set()
 
-    # Query all active students who have preferences submitted
-    students = Student.query.filter(Student.status == "active").join(StudentPreference).all()
+    # Query all active/verified students who have preferences submitted.
+    students = Student.query.filter(
+        Student.status == "active",
+        Student.email_verified.is_(True),
+        Student.verification_status == "approved",
+    ).join(StudentPreference).all()
 
     # Get all active or awaiting assignments for this semester
     semester_assignments = RoomAssignment.query.filter(
@@ -46,6 +57,15 @@ def get_eligible_students(semester, waiting_student_ids=None):
         if assignment.student_id_2:
             assigned_ids.add(assignment.student_id_2)
 
+    student_ids = [s.student_id for s in students]
+    allergy_rows = StudentAllergy.query.filter(StudentAllergy.student_id.in_(student_ids)).all() if student_ids else []
+    allergy_map = {row.student_id: row for row in allergy_rows}
+
+    pref_rows = PreferredRoommate.query.filter(PreferredRoommate.student_id.in_(student_ids)).all() if student_ids else []
+    mutual_map = {}
+    for row in pref_rows:
+        mutual_map.setdefault(row.student_id, set()).add(row.preferred_student_id)
+
     eligible = []
     for s in students:
         if s.student_id not in assigned_ids or s.student_id in waiting_student_ids:
@@ -55,7 +75,9 @@ def get_eligible_students(semester, waiting_student_ids=None):
                 "gender": s.gender,
                 "year": s.year,
                 "student_number": s.student_number,
-                "preferences": s.preferences
+                "preferences": s.preferences,
+                "allergies": allergy_map.get(s.student_id),
+                "mutual_pairs": mutual_map.get(s.student_id, set()),
             })
 
     return eligible
