@@ -98,9 +98,9 @@ def register_student():
         return jsonify({"error": "Year of study must be between 1 and 6"}), 400
 
     # Gender validation
-    valid_genders = ["male", "female", "prefer_not_to_say"]
+    valid_genders = ["male", "female"]
     if data["gender"].lower() not in valid_genders:
-        return jsonify({"error": "Gender must be male, female, or prefer_not_to_say"}), 400
+        return jsonify({"error": "Gender must be male or female"}), 400
 
     # Uniqueness checks
     if Student.query.filter_by(email=data["email"]).first():
