@@ -9,7 +9,9 @@ Manual hostel roommate assignment is slow, inconsistent, and often ignores lifes
 - Collect structured roommate preference data from students.
 - Calculate compatibility scores for potential roommate pairs.
 - Prioritize filling partially allocated rooms before creating new solo allocations.
+- Prioritize mutual preferred-roommate selections during fresh-pool matching.
 - Provide admin tools for preview, approve, override, and undo assignment workflows.
+- Notify students by email after allocations are confirmed.
 - Track roommate conflicts with RA/admin escalation workflow.
 
 ## Features
@@ -18,10 +20,15 @@ Manual hostel roommate assignment is slow, inconsistent, and often ignores lifes
 - JWT logout revocation via token blocklist.
 - Student preference submission and update.
 - Compatibility scoring + weighted matching.
+- Mutual preferred-roommate prioritization in allocation flow.
 - Allocation preview with room-capacity validation.
 - Solo allocation support (`awaiting_roommate`).
 - Priority matching into rooms missing one roommate.
+- Allocation confirmation email notifications (room, roommate, semester, status).
 - Assignment undo logic with conflict integrity checks.
+- Admin dashboard pagination (10 rows per page) across all admin tab tables.
+- Admin supervisor tabs with pending-count badges and disabled empty queues.
+- Verification document and profile-photo review workflow for admins.
 - Conflict reporting, mediation, escalation, and disable workflows.
 - CSV export reports for students and assignment summaries.
 
@@ -34,7 +41,7 @@ Manual hostel roommate assignment is slow, inconsistent, and often ignores lifes
 
 ## Repository Structure
 ```text
-roommate_comp/
+roomate-tracker/
 ├── backend/
 │   ├── app/
 │   │   ├── routes/
@@ -65,7 +72,7 @@ roommate_comp/
 ### 1. Clone
 ```bash
 git clone https://github.com/clive-strath/roommate_tracker.git
-cd roommate_comp
+cd roomate-tracker
 ```
 
 ### 2. Backend Setup
@@ -102,6 +109,13 @@ Optional seed:
 python seed.py
 ```
 
+The seed script creates demo-ready data including:
+- 12 approved + email-verified students
+- profile photos and verification documents
+- submitted preferences and exactly 3 preferred roommate choices per student
+- a mix of mutual and non-mutual preferred-roommate edges
+- no pre-created room assignments
+
 Run backend:
 ```bash
 python run.py
@@ -125,9 +139,15 @@ npm run dev -- --host
 
 ## Usage
 - Open `http://localhost:5173`.
-- Register/login as student to submit preferences.
-- Login as admin to generate previews, approve pair/solo allocations, and manage assignments.
+- Register/login as student to submit preferences and preferred roommate choices.
+- Login as admin to generate previews, approve pair/solo allocations, manage assignments, and review verification/stay-date queues.
+- Students receive email notifications after their assignment is confirmed.
 - Resident advisors handle assigned conflict queues.
+
+### Allocation Behavior Summary
+- Waiting students (`awaiting_roommate`) are matched first against fresh eligible students.
+- Remaining fresh students are matched with mutual preferred-roommate pairs prioritized before weighted graph matching.
+- Hard constraints (for example incompatible profile/allergy constraints) are still enforced during pair generation.
 
 ## API Overview
 Base URL: `/api`
@@ -151,9 +171,23 @@ Base URL: `/api`
 - `GET /admin/allocation/preview`
 - `POST /admin/allocation/approve-all`
 - `POST /admin/allocation/approve-pair`
+- `POST /admin/allocation/confirm`
 - `POST /admin/allocation/override`
+- `GET /admin/allocation/rooms-summary`
 - `PATCH /admin/allocation/assignments/<assignment_id>/undo`
 - `GET /admin/allocation/assignments`
+
+Allocation approval responses include email notification metadata:
+- `notifications_sent`
+- `notification_failures`
+
+### Admin Verification and Stay-Date Review
+- `GET /admin/students/verification/pending`
+- `PATCH /admin/students/<student_id>/verification`
+- `GET /admin/students/<student_id>/verification-documents`
+- `GET /admin/students/<student_id>/verification-documents/<doc_type>`
+- `GET /admin/stay-date-requests`
+- `PATCH /admin/stay-date-requests/<request_id>/review`
 
 ### Conflicts
 - `POST /conflicts`
