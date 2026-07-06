@@ -11,10 +11,25 @@ from app.services.compatibility_engine import (
     calculate_compatibility,
     build_compatibility_graph,
     run_maximum_weight_matching,
+    run_full_matching,
     is_flagged
 )
+from app.services.email_service import send_allocation_email
 
 import networkx as nx
+
+
+def _append_notification(target, student, room, semester, assignment_status, roommate=None, compatibility_score=None):
+    if not student or not student.email:
+        return
+    target.append({
+        "student": student,
+        "room": room,
+        "semester": semester,
+        "assignment_status": assignment_status,
+        "roommate": roommate,
+        "compatibility_score": compatibility_score,
+    })
 
 def get_waiting_students(semester):
     """
@@ -133,8 +148,10 @@ def run_prioritized_matching(eligible_students, waiting_student_ids):
     # Step 2: match remaining fresh students among themselves
     remaining_fresh = [s for s in fresh_students if s["student_id"] not in matched_ids]
     if remaining_fresh:
-        fresh_graph = build_compatibility_graph(remaining_fresh)
-        fresh_pairs, fresh_unmatched = run_maximum_weight_matching(fresh_graph)
+        # Apply mutual preferred-roommate priority before algorithmic pairing.
+        fresh_result = run_full_matching(remaining_fresh)
+        fresh_pairs = fresh_result["all_pairs"]
+        fresh_unmatched = fresh_result["unmatched_ids"]
         matched_pairs.extend(fresh_pairs)
     else:
         fresh_unmatched = []
@@ -240,6 +257,7 @@ def confirm_allocation(semester, admin_id, confirmed_pairs, confirmed_singles):
     confirmed_singles = confirmed_singles or []
     results = {"created": [], "updated": [], "failed": []}
     reusable_statuses = ["cancelled", "completed", "archived"]
+    notifications = []
 
     required_empty_rooms = (
         sum(1 for p in confirmed_pairs if not p.get("joins_existing_room"))
@@ -323,6 +341,28 @@ def confirm_allocation(semester, admin_id, confirmed_pairs, confirmed_singles):
                 existing.status = "active"
                 results["updated"].append(existing.assignment_id)
 
+                waiting_student = Student.query.get(existing.student_id_1)
+                new_student = Student.query.get(new_student_id)
+                room = Room.query.get(existing.room_id)
+                _append_notification(
+                    notifications,
+                    waiting_student,
+                    room,
+                    semester,
+                    existing.status,
+                    roommate=new_student,
+                    compatibility_score=pair["score"],
+                )
+                _append_notification(
+                    notifications,
+                    new_student,
+                    room,
+                    semester,
+                    existing.status,
+                    roommate=waiting_student,
+                    compatibility_score=pair["score"],
+                )
+
                 for sid in (existing.student_id_1, new_student_id):
                     pref = StudentPreference.query.filter_by(student_id=sid).first()
                     if pref:
@@ -384,6 +424,27 @@ def confirm_allocation(semester, admin_id, confirmed_pairs, confirmed_singles):
                 reusable_assignment.is_flagged = is_flagged(pair["score"]) if pair["score"] is not None else False
                 reusable_assignment.assigned_by = admin_id
                 results["updated"].append(reusable_assignment.assignment_id)
+
+                s1 = Student.query.get(sid1)
+                s2 = Student.query.get(sid2)
+                _append_notification(
+                    notifications,
+                    s1,
+                    room,
+                    semester,
+                    reusable_assignment.status,
+                    roommate=s2,
+                    compatibility_score=pair["score"],
+                )
+                _append_notification(
+                    notifications,
+                    s2,
+                    room,
+                    semester,
+                    reusable_assignment.status,
+                    roommate=s1,
+                    compatibility_score=pair["score"],
+                )
             else:
                 assignment = RoomAssignment(
                     student_id_1=sid1,
@@ -400,6 +461,27 @@ def confirm_allocation(semester, admin_id, confirmed_pairs, confirmed_singles):
                 db.session.add(assignment)
                 db.session.flush()
                 results["created"].append(assignment.assignment_id)
+
+                s1 = Student.query.get(sid1)
+                s2 = Student.query.get(sid2)
+                _append_notification(
+                    notifications,
+                    s1,
+                    room,
+                    semester,
+                    assignment.status,
+                    roommate=s2,
+                    compatibility_score=pair["score"],
+                )
+                _append_notification(
+                    notifications,
+                    s2,
+                    room,
+                    semester,
+                    assignment.status,
+                    roommate=s1,
+                    compatibility_score=pair["score"],
+                )
 
             for sid in (sid1, sid2):
                 pref = StudentPreference.query.filter_by(student_id=sid).first()
@@ -443,6 +525,17 @@ def confirm_allocation(semester, admin_id, confirmed_pairs, confirmed_singles):
                 reusable_assignment.is_flagged = False
                 reusable_assignment.assigned_by = admin_id
                 results["updated"].append(reusable_assignment.assignment_id)
+
+                student = Student.query.get(student_id)
+                _append_notification(
+                    notifications,
+                    student,
+                    room,
+                    semester,
+                    reusable_assignment.status,
+                    roommate=None,
+                    compatibility_score=None,
+                )
             else:
                 assignment = RoomAssignment(
                     student_id_1=student_id,
@@ -460,6 +553,17 @@ def confirm_allocation(semester, admin_id, confirmed_pairs, confirmed_singles):
                 db.session.flush()
                 results["created"].append(assignment.assignment_id)
 
+                student = Student.query.get(student_id)
+                _append_notification(
+                    notifications,
+                    student,
+                    room,
+                    semester,
+                    assignment.status,
+                    roommate=None,
+                    compatibility_score=None,
+                )
+
             pref = StudentPreference.query.filter_by(student_id=student_id).first()
             if pref:
                 pref.is_locked = True
@@ -468,5 +572,28 @@ def confirm_allocation(semester, admin_id, confirmed_pairs, confirmed_singles):
         raise
 
     db.session.commit()
+
+    notification_failures = []
+    notification_success = 0
+    for payload in notifications:
+        try:
+            send_allocation_email(
+                student=payload["student"],
+                room=payload["room"],
+                semester=payload["semester"],
+                assignment_status=payload["assignment_status"],
+                roommate=payload["roommate"],
+                compatibility_score=payload["compatibility_score"],
+            )
+            notification_success += 1
+        except Exception as exc:
+            notification_failures.append({
+                "student_id": payload["student"].student_id,
+                "email": payload["student"].email,
+                "error": str(exc),
+            })
+
+    results["notifications_sent"] = notification_success
+    results["notification_failures"] = notification_failures
 
     return results

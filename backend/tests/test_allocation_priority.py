@@ -49,3 +49,46 @@ def test_waiting_without_compatible_fresh_edges_remains_waiting():
     assert pair_ids == {20, 30}
     assert unmatched_fresh_ids == []
     assert unmatched_waiting_ids == [10]
+
+
+def test_mutual_preferred_fresh_pair_is_prioritized():
+    eligible = [
+        {
+            "student_id": 101,
+            "gender": "male",
+            "preferences": _prefs(3),
+            "mutual_pairs": {102},
+        },
+        {
+            "student_id": 102,
+            "gender": "male",
+            "preferences": _prefs(3),
+            "mutual_pairs": {101},
+        },
+        {
+            "student_id": 103,
+            "gender": "male",
+            "preferences": _prefs(3),
+            "mutual_pairs": set(),
+        },
+        {
+            "student_id": 104,
+            "gender": "male",
+            "preferences": _prefs(3),
+            "mutual_pairs": set(),
+        },
+    ]
+
+    matched_pairs, unmatched_fresh_ids, unmatched_waiting_ids = run_prioritized_matching(
+        eligible_students=eligible,
+        waiting_student_ids=set(),
+    )
+
+    pair_sets = [
+        {pair["student_id_1"], pair["student_id_2"]}
+        for pair in matched_pairs
+    ]
+
+    assert {101, 102} in pair_sets
+    assert unmatched_fresh_ids == []
+    assert unmatched_waiting_ids == []
