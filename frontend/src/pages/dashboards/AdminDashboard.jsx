@@ -4,6 +4,7 @@ import api from "../../api/axios";
 import Navbar from "../../components/Navbar";
 
 export default function AdminDashboard() {
+  const PAGE_SIZE = 10;
   const { role } = useAuth();
   const [activeSection, setActiveSection] = useState("overview");
 
@@ -15,7 +16,7 @@ export default function AdminDashboard() {
   const [filterStatus, setFilterStatus] = useState("");
   const [actionMessage, setActionMessage] = useState("");
   const [studentsPage, setStudentsPage] = useState(1);
-  const [studentsPerPage] = useState(20);
+  const [studentsPerPage] = useState(PAGE_SIZE);
   const [studentsTotalPages, setStudentsTotalPages] = useState(1);
   const [exportingAssignmentsSummaryCsv, setExportingAssignmentsSummaryCsv] = useState(false);
 
@@ -52,7 +53,7 @@ export default function AdminDashboard() {
   const [confirmedAssignments, setConfirmedAssignments] = useState([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [assignmentsPage, setAssignmentsPage] = useState(1);
-  const [assignmentsPerPage] = useState(20);
+  const [assignmentsPerPage] = useState(PAGE_SIZE);
   const [assignmentsTotalPages, setAssignmentsTotalPages] = useState(1);
   const [assignmentsTotal, setAssignmentsTotal] = useState(0);
   const [assignmentFilters, setAssignmentFilters] = useState({
@@ -75,7 +76,7 @@ export default function AdminDashboard() {
   });
   const [conflictsLoading, setConflictsLoading] = useState(false);
   const [conflictsPage, setConflictsPage] = useState(1);
-  const [conflictsPerPage] = useState(20);
+  const [conflictsPerPage] = useState(PAGE_SIZE);
   const [conflictsTotalPages, setConflictsTotalPages] = useState(1);
   const [conflictsTotal, setConflictsTotal] = useState(0);
   const [conflictError, setConflictError] = useState("");
@@ -97,6 +98,10 @@ export default function AdminDashboard() {
   // Supervisor workflow state (moved from Admin Supervisor Tools)
   const [verificationRows, setVerificationRows] = useState([]);
   const [verificationLoading, setVerificationLoading] = useState(false);
+  const [verificationPage, setVerificationPage] = useState(1);
+  const [verificationPerPage] = useState(PAGE_SIZE);
+  const [verificationTotalPages, setVerificationTotalPages] = useState(1);
+  const [verificationTotal, setVerificationTotal] = useState(0);
   const [reviewVerificationTarget, setReviewVerificationTarget] = useState(null);
   const [verificationReviewNote, setVerificationReviewNote] = useState("");
   const [selectedVerificationStudent, setSelectedVerificationStudent] = useState(null);
@@ -108,6 +113,10 @@ export default function AdminDashboard() {
 
   const [stayReviewRows, setStayReviewRows] = useState([]);
   const [stayReviewLoading, setStayReviewLoading] = useState(false);
+  const [stayReviewPage, setStayReviewPage] = useState(1);
+  const [stayReviewPerPage] = useState(PAGE_SIZE);
+  const [stayReviewTotalPages, setStayReviewTotalPages] = useState(1);
+  const [stayReviewTotal, setStayReviewTotal] = useState(0);
   const [reviewStayTarget, setReviewStayTarget] = useState(null);
   const [stayReviewNote, setStayReviewNote] = useState("");
 
@@ -118,6 +127,12 @@ export default function AdminDashboard() {
   const [diagScores, setDiagScores] = useState([]);
   const [diagSummary, setDiagSummary] = useState(null);
   const [diagLoading, setDiagLoading] = useState(false);
+  const [diagPage, setDiagPage] = useState(1);
+  const [diagPerPage] = useState(PAGE_SIZE);
+
+  const [allocationSuggestionsPage, setAllocationSuggestionsPage] = useState(1);
+  const [allocationSinglesPage, setAllocationSinglesPage] = useState(1);
+  const [allocationPerPage] = useState(PAGE_SIZE);
 
   const clearAllocationBanners = () => {
     setAllocError("");
@@ -717,12 +732,23 @@ export default function AdminDashboard() {
     setVerificationDocMimeType("");
   };
 
-  const loadVerificationQueue = async () => {
+  const loadVerificationQueue = async (requestedPage = verificationPage) => {
     setVerificationLoading(true);
     try {
-      const res = await api.get("/admin/students/verification/pending?page=1&per_page=50");
+      const res = await api.get(
+        `/admin/students/verification/pending?page=${requestedPage}&per_page=${verificationPerPage}`
+      );
       setVerificationRows(res.data?.students || []);
+      const totalPages = res.data?.total_pages || 1;
+      setVerificationTotalPages(totalPages);
+      setVerificationTotal(res.data?.total || 0);
+      if (requestedPage > totalPages && totalPages > 0) {
+        setVerificationPage(totalPages);
+      }
     } catch (err) {
+      setVerificationRows([]);
+      setVerificationTotalPages(1);
+      setVerificationTotal(0);
       setAllocError(err.response?.data?.error || "Failed to load pending verifications.");
     } finally {
       setVerificationLoading(false);
@@ -778,12 +804,23 @@ export default function AdminDashboard() {
     }
   };
 
-  const loadStayReviewQueue = async () => {
+  const loadStayReviewQueue = async (requestedPage = stayReviewPage) => {
     setStayReviewLoading(true);
     try {
-      const res = await api.get("/admin/stay-date-requests?status=pending&page=1&per_page=50");
+      const res = await api.get(
+        `/admin/stay-date-requests?status=pending&page=${requestedPage}&per_page=${stayReviewPerPage}`
+      );
       setStayReviewRows(res.data?.requests || []);
+      const totalPages = res.data?.total_pages || 1;
+      setStayReviewTotalPages(totalPages);
+      setStayReviewTotal(res.data?.total || 0);
+      if (requestedPage > totalPages && totalPages > 0) {
+        setStayReviewPage(totalPages);
+      }
     } catch (err) {
+      setStayReviewRows([]);
+      setStayReviewTotalPages(1);
+      setStayReviewTotal(0);
       setAllocError(err.response?.data?.error || "Failed to load stay-date requests.");
     } finally {
       setStayReviewLoading(false);
@@ -936,22 +973,34 @@ export default function AdminDashboard() {
     if (activeSection === "stay-requests") {
       loadStayReviewQueue();
     }
-  }, [activeSection]);
+  }, [activeSection, verificationPage, stayReviewPage]);
 
   useEffect(() => {
-    if (activeSection === "verification" && !verificationLoading && verificationRows.length === 0) {
+    setAllocationSuggestionsPage(1);
+  }, [suggestions.length]);
+
+  useEffect(() => {
+    setAllocationSinglesPage(1);
+  }, [singles.length]);
+
+  useEffect(() => {
+    setDiagPage(1);
+  }, [diagScores.length]);
+
+  useEffect(() => {
+    if (activeSection === "verification" && !verificationLoading && verificationTotal === 0) {
       setActiveSection("overview");
       setSelectedVerificationStudent(null);
       setVerificationDocs(null);
       clearDocPreviews();
     }
-  }, [activeSection, verificationLoading, verificationRows.length]);
+  }, [activeSection, verificationLoading, verificationTotal]);
 
   useEffect(() => {
-    if (activeSection === "stay-requests" && !stayReviewLoading && stayReviewRows.length === 0) {
+    if (activeSection === "stay-requests" && !stayReviewLoading && stayReviewTotal === 0) {
       setActiveSection("overview");
     }
-  }, [activeSection, stayReviewLoading, stayReviewRows.length]);
+  }, [activeSection, stayReviewLoading, stayReviewTotal]);
 
   useEffect(() => {
     return () => {
@@ -963,10 +1012,23 @@ export default function AdminDashboard() {
   const openCount = conflicts.filter((c) => c.status === "open").length;
   const mediationCount = conflicts.filter((c) => c.status === "in_mediation").length;
   const escalatedCount = conflicts.filter((c) => c.status === "escalated").length;
-  const verificationPendingCount = verificationRows.length;
-  const stayPendingCount = stayReviewRows.length;
+  const verificationPendingCount = verificationTotal;
+  const stayPendingCount = stayReviewTotal;
   const verificationTabDisabled = !verificationLoading && verificationPendingCount === 0;
   const stayRequestsTabDisabled = !stayReviewLoading && stayPendingCount === 0;
+
+  const allocationTotalSuggestionPages = Math.max(1, Math.ceil(suggestions.length / allocationPerPage));
+  const allocationVisibleSuggestions = suggestions.slice(
+    (allocationSuggestionsPage - 1) * allocationPerPage,
+    allocationSuggestionsPage * allocationPerPage
+  );
+  const allocationTotalSinglesPages = Math.max(1, Math.ceil(singles.length / allocationPerPage));
+  const allocationVisibleSingles = singles.slice(
+    (allocationSinglesPage - 1) * allocationPerPage,
+    allocationSinglesPage * allocationPerPage
+  );
+  const diagnosticsTotalPages = Math.max(1, Math.ceil(diagScores.length / diagPerPage));
+  const diagnosticsVisibleRows = diagScores.slice((diagPage - 1) * diagPerPage, diagPage * diagPerPage);
 
   const handleDisable = async (studentId, studentName) => {
     if (window.confirm(`Are you sure you want to deactivate student ${studentName}?`)) {
@@ -1619,7 +1681,7 @@ export default function AdminDashboard() {
                     </td>
                   </tr>
                 ) : (
-                  suggestions.map((row) => (
+                  allocationVisibleSuggestions.map((row) => (
                     <tr key={row.row_id} className={row.is_flagged ? "allocation-row-flagged" : ""}>
                       <td>
                         <div style={{ fontWeight: 600 }}>{row.student_1_name}</div>
@@ -1690,6 +1752,34 @@ export default function AdminDashboard() {
             </table>
           </div>
 
+          {suggestions.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "12px" }}>
+              <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                Page {allocationSuggestionsPage} of {allocationTotalSuggestionPages} ({suggestions.length} records)
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: "6px 10px", fontSize: "12px" }}
+                  disabled={allocationSuggestionsPage <= 1 || allocLoading || allocProcessing}
+                  onClick={() => setAllocationSuggestionsPage((p) => Math.max(1, p - 1))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: "6px 10px", fontSize: "12px" }}
+                  disabled={allocationSuggestionsPage >= allocationTotalSuggestionPages || allocLoading || allocProcessing}
+                  onClick={() => setAllocationSuggestionsPage((p) => Math.min(allocationTotalSuggestionPages, p + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+
           {singles.length > 0 && (
             <div style={{ marginTop: "20px" }}>
               <h4 style={{ marginBottom: "10px" }}>Unmatched Students (Solo Allocations)</h4>
@@ -1704,7 +1794,7 @@ export default function AdminDashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {singles.map((single) => (
+                    {allocationVisibleSingles.map((single) => (
                       <tr key={single.student_id}>
                         <td>
                           <div style={{ fontWeight: 600 }}>{single.name}</div>
@@ -1729,6 +1819,32 @@ export default function AdminDashboard() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "12px" }}>
+                <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                  Page {allocationSinglesPage} of {allocationTotalSinglesPages} ({singles.length} records)
+                </div>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: "6px 10px", fontSize: "12px" }}
+                    disabled={allocationSinglesPage <= 1 || allocLoading || allocProcessing}
+                    onClick={() => setAllocationSinglesPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: "6px 10px", fontSize: "12px" }}
+                    disabled={allocationSinglesPage >= allocationTotalSinglesPages || allocLoading || allocProcessing}
+                    onClick={() => setAllocationSinglesPage((p) => Math.min(allocationTotalSinglesPages, p + 1))}
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -1970,6 +2086,32 @@ export default function AdminDashboard() {
             </table>
           </div>
 
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "12px" }}>
+            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+              Page {verificationPage} of {verificationTotalPages} ({verificationTotal} records)
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ padding: "6px 10px", fontSize: "12px" }}
+                disabled={verificationPage <= 1 || verificationLoading}
+                onClick={() => setVerificationPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ padding: "6px 10px", fontSize: "12px" }}
+                disabled={verificationPage >= verificationTotalPages || verificationLoading}
+                onClick={() => setVerificationPage((p) => Math.min(verificationTotalPages, p + 1))}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+
           {(selectedVerificationStudent || verificationDocsLoading) && (
             <div style={{ marginTop: "14px", borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
               <h4 style={{ marginBottom: "10px" }}>Submitted Documents: {selectedVerificationStudent?.name || "Selected Student"}</h4>
@@ -2042,6 +2184,32 @@ export default function AdminDashboard() {
                 ))}
               </tbody>
             </table>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "12px" }}>
+            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+              Page {stayReviewPage} of {stayReviewTotalPages} ({stayReviewTotal} records)
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ padding: "6px 10px", fontSize: "12px" }}
+                disabled={stayReviewPage <= 1 || stayReviewLoading}
+                onClick={() => setStayReviewPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ padding: "6px 10px", fontSize: "12px" }}
+                disabled={stayReviewPage >= stayReviewTotalPages || stayReviewLoading}
+                onClick={() => setStayReviewPage((p) => Math.min(stayReviewTotalPages, p + 1))}
+              >
+                Next
+              </button>
+            </div>
           </div>
         </div>
         )}
@@ -2125,7 +2293,7 @@ export default function AdminDashboard() {
                   <tr><td colSpan="5" style={{ textAlign: "center", color: "var(--text-muted)" }}>Loading diagnostics...</td></tr>
                 ) : diagScores.length === 0 ? (
                   <tr><td colSpan="5" style={{ textAlign: "center", color: "var(--text-muted)" }}>No compatibility diagnostics loaded.</td></tr>
-                ) : diagScores.map((row) => (
+                ) : diagnosticsVisibleRows.map((row) => (
                   <tr key={`${row.candidate_id}-${row.computed_at || "na"}`}>
                     <td>{row.candidate_id}</td>
                     <td>{row.score}</td>
@@ -2137,6 +2305,34 @@ export default function AdminDashboard() {
               </tbody>
             </table>
           </div>
+
+          {diagScores.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "12px" }}>
+              <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                Page {diagPage} of {diagnosticsTotalPages} ({diagScores.length} records)
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: "6px 10px", fontSize: "12px" }}
+                  disabled={diagPage <= 1 || diagLoading}
+                  onClick={() => setDiagPage((p) => Math.max(1, p - 1))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: "6px 10px", fontSize: "12px" }}
+                  disabled={diagPage >= diagnosticsTotalPages || diagLoading}
+                  onClick={() => setDiagPage((p) => Math.min(diagnosticsTotalPages, p + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         )}
           </div>

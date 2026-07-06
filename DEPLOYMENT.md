@@ -8,6 +8,8 @@ This document defines minimum deployment readiness for the Hostel Harmony projec
 - Environment variables are configured in hosting platform secrets.
 - Database schema applied using `backend/schema.sql`.
 - Production secrets are not committed to git.
+- SMTP credentials are valid (required for allocation and auth emails).
+- Seed/demo data (if used) is regenerated with `backend/seed.py` after schema reset.
 
 ## 2. Backend Deployment Options
 
@@ -44,6 +46,8 @@ This document defines minimum deployment readiness for the Hostel Harmony projec
 - `JWT_SECRET_KEY`
 - `DATABASE_URL`
 - `FRONTEND_URL`
+- `FRONTEND_VERIFY_EMAIL_URL`
+- `EMAIL_VERIFY_TOKEN_EXPIRES_MINUTES`
 - `SMTP_HOST`
 - `SMTP_PORT`
 - `SMTP_USERNAME`
@@ -67,7 +71,21 @@ This document defines minimum deployment readiness for the Hostel Harmony projec
 - Add health-check endpoint and uptime monitoring.
 - Enable daily DB backups.
 
-## 7. Rollback Plan
+## 7. Allocation and Notification Runtime Notes
+- Allocation confirmation now sends student email notifications after DB commit.
+- Notification details include semester, room block/number, assignment status, roommate, and compatibility score where available.
+- Allocation API responses include `notifications_sent` and `notification_failures`; monitor these in backend logs/metrics.
+- Matching order at runtime:
+  - waiting students (`awaiting_roommate`) are matched first
+  - remaining fresh pool applies mutual preferred-roommate priority, then weighted graph matching
+
+## 8. Post-Deploy Smoke Checks
+- Run allocation preview and approval from admin dashboard.
+- Verify pending queue tabs (verification, stay-date requests) paginate and badge counts remain accurate.
+- Confirm at least one approved allocation produces an outgoing email and no SMTP errors.
+- Check assignment undo and conflict endpoints still behave as expected.
+
+## 9. Rollback Plan
 - Keep previous backend image/release available.
 - Keep DB snapshots before migration.
 - Roll back app version first, then DB only if required.
